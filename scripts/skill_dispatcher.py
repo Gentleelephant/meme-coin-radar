@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from typing import Optional
 
 from providers.binance import alpha_token_list, futures_funding, futures_klines, futures_ticker
@@ -26,6 +26,7 @@ from providers.gmgn import security_score, signal as gmgn_signal_provider, trenc
 from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
 
 BATCH_WORKERS = 8
+BATCH_TIMEOUT_SECONDS = 45
 
 
 def okx_btc_status() -> dict:
@@ -213,13 +214,22 @@ def batch_binance(coins: list) -> dict:
     results = {}
     with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as executor:
         futures = {executor.submit(_fetch_one_coin, coin): coin for coin in coins}
-        for future in as_completed(futures):
-            symbol = futures[future]
-            try:
-                resolved_symbol, payload = future.result(timeout=20)
-                results[resolved_symbol] = payload
-            except Exception:
-                results[symbol] = {"ticker": None, "funding": None, "klines": None}
+        try:
+            for future in as_completed(futures, timeout=BATCH_TIMEOUT_SECONDS):
+                symbol = futures[future]
+                try:
+                    resolved_symbol, payload = future.result(timeout=20)
+                    results[resolved_symbol] = payload
+                except Exception:
+                    results[symbol] = {"ticker": None, "funding": None, "klines": None}
+        except TimeoutError:
+            pass
+
+        for future, symbol in futures.items():
+            if symbol in results:
+                continue
+            future.cancel()
+            results[symbol] = {"ticker": None, "funding": None, "klines": None}
     return results
 
 

@@ -1,55 +1,55 @@
 ---
 name: meme-coin-radar
-description: "妖币雷达 Phase 1.8 — GMGN链上增强版，对齐 Obsidian 妖币判断指标五大模块，新增 GMGN SOL/BSC Chain层扫描。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。Phase 1.8 新增：GMGN SOL/BSC热门代币、链上安全否决层（rug_ratio/is_wash_trading/top10持仓）、聪明钱追踪（smart_degen_count）、Pump.fun新上线代币。"
+description: "妖币雷达 Phase 2.0 — Provider + Radar Logic 融合版，结合当前项目的多数据源/fallback 架构与 crypto-signal-radar 的配置化、纯逻辑评分、执行摘要和交易建议输出。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
 tags: ["crypto", "meme-coin", "funding-rate", "open-interest", "perpetual-swap", "okx", "sentiment", "binance", "atr", "ema", "gmgn", "smart-money", "sol", "pumpfun"]
 category: crypto-trading
 license: MIT
 author: hermes
-version: "1.8.0"
+version: "2.0.0"
 metadata:
-  phase: "1.8"
-  data_sources: ["okx-market", "binance-fapi-klines", "binance-alpha", "gmgn-market"]
-  obsidian_alignment: "对齐 资料库/妖币判断指标.md 五大模块"
+  phase: "2.0"
+  data_sources: ["okx-market", "binance-cli", "binance-alpha", "gmgn-market", "hyperliquid-fallback"]
+  obsidian_alignment: "对齐 妖币判断指标.md 六大模块，并增加执行摘要与入场建议"
   output: "analysis report + raw data to ~/meme-radar/"
   auto_script: "scripts/auto-run.py"
 ---
 
-# 🦊 妖币雷达 Phase 1.8 — GMGN链上增强版
+# 🦊 妖币雷达 Phase 2.0 — Provider + Radar Logic 融合版
 
-> **定位**：捕捉合约市场中的极端异动 meme 币，识别被套韭菜，搭便车反向开单。同时扩展到 GMGN Chain层 meme coin 预警。
-> **Phase 1.8**：在 Phase 1.7 基础上，接入 GMGN API：
->   - 新增：GMGN SOL/BSC 热门代币扫描（Layer 0 独立板块）
->   - 新增：GMGN 链上安全否决层（`rug_ratio > 0.3` / `is_wash_trading` / `top_10_holder > 60%`）
->   - 新增：GMGN 聪明钱追踪（`smart_degen_count` / `renowned_count`）
->   - 新增：GMGN Pump.fun 新上线代币预警
->   - 新增：GMGN 实时聪明钱信号（Smart Degen Buy / Platform Call）
->   - Binance 合约代币叠加 GMGN 安全增强评分
-> **Obsidian 对齐**：评分权重和阈值参考 `妖币判断指标.md` 的五大模块体系
+> **定位**：从多 provider 数据里筛出值得做合约的妖币，并直接给出方向、入场区间、止盈止损和仓位建议。
+> **Phase 2.0 融合点**：
+> - 保留当前项目的 provider/fallback 架构：`OKX + Binance + GMGN + fallback`
+> - 引入 `crypto-signal-radar` 的配置层：`scripts/config.py`
+> - 引入纯逻辑评分层：`scripts/radar_logic.py`
+> - 报告新增 `Executive Summary`、`confidence`、`entry_reasons`
+> - 合约建议不再只给分数，还会输出可执行交易计划
+> **Obsidian 对齐**：评分权重和阈值参考 `妖币判断指标.md` 的六大模块体系
 
 ---
 
 ## 🔧 数据步骤与 Skill 映射表
 
 > **说明**：运行 `auto-run.py` 脚本时，各步骤数据获取方式一览。
-> 脚本直接调用底层命令/API，不需要预先加载任何 skill。
-> 以下表格仅供理解数据血缘和维护参考。
+> 当前实现采用 `skill_dispatcher.py + providers/* + radar_logic.py` 三层结构。
+> 以下表格用于理解数据血缘和维护入口。
 
 | Step | 数据内容 | 获取方式 | 底层命令 / API | 对应 Skill（参考） |
 |---:|---|---|---|---|
-| 0 | BTC 大盘状态 | `subprocess.run("okx market ticker...")` | OKX REST CLI | `okx-cex-market` |
-| 0.5 | Binance Alpha 社区活跃度 | `subprocess.run("npx @binance/binance-cli alpha token-list")` | Binance Alpha API | `binance` |
-| 1 | OKX 全量 USDT-M SWAP tickers | `subprocess.run("okx market tickers SWAP")` | OKX REST CLI | `okx-cex-market` |
-| 2 | Binance ticker + funding + K线 | `urllib.request` 直接调 REST API | `fapi.binance.com` | `binance` |
-| G1 | GMGN SOL 热门代币排行 | `gmgn_api()` → `/v1/market/rank` + npx fallback | GMGN REST API + npx gmgn-cli | `gmgn-market` |
-| G2 | GMGN BSC 热门代币排行 | 同上，换 `chain="bsc"` | GMGN REST API + npx gmgn-cli | `gmgn-market` |
-| G3 | GMGN 聪明钱实时信号 | `gmgn_api()` → `/v1/market/token_signal` + npx fallback | GMGN REST API + npx gmgn-cli | `trading-signal`（参考） |
-| G4 | GMGN Pump.fun 新代币 | `subprocess.run("npx gmgn-cli market trenches...")` | npx gmgn-cli | `okx-dex-trenches`（参考） |
-| 3 | 六大模块评分计算 | 本地 Python（无外部调用） | — | 无，纯计算逻辑 |
+| 0 | BTC 大盘状态 | `skill_dispatcher.okx_btc_status()` | `okx market ticker BTC-USDT-SWAP` | `okx-cex-market` |
+| 0.5 | Binance Alpha 社区活跃度 | `skill_dispatcher.binance_alpha()` | `binance-cli alpha token-list --json` | `binance` |
+| 1 | OKX 全量 USDT-M SWAP tickers | `skill_dispatcher.okx_swap_tickers()` | `okx market tickers SWAP` | `okx-cex-market` |
+| 2 | ticker + funding + K线 | `skill_dispatcher.batch_binance()` | `binance-cli futures-usds ...` + fallback | `binance` |
+| G1 | GMGN SOL 热门代币排行 | `skill_dispatcher.gmgn_trending()` | GMGN API / `gmgn-cli market trending` | `gmgn-market` |
+| G2 | GMGN BSC 热门代币排行 | 同上，换 `chain="bsc"` | GMGN API / `gmgn-cli market trending` | `gmgn-market` |
+| G3 | GMGN 聪明钱实时信号 | `skill_dispatcher.gmgn_signal()` | GMGN API | `gmgn-market` |
+| G4 | GMGN Pump.fun 新代币 | `skill_dispatcher.gmgn_trenches()` | `gmgn-cli market trenches` | `gmgn-market` |
+| 3 | 六大模块评分计算 | `radar_logic.score_candidate()` | 本地 Python | 无，纯计算逻辑 |
+| 4 | 交易计划生成 | `radar_logic.build_trade_plan()` | 本地 Python | 无，纯计算逻辑 |
 
 > **⚠️ 依赖说明**：
-> - `npx @binance/binance-cli` — Node.js 环境，npx 自动下载
+> - `binance-cli` 命令与官方 Binance skill 保持一致
 > - `npx gmgn-cli` — Node.js 环境，GMGN API Key 配置在 `~/.config/gmgn/.env`
-> - OKX/Binance REST — 无需认证，直接 HTTP 调用
+> - 当 `OKX CLI` 缺失或 `Binance futures` 不可达时，provider 层会尝试 fallback，而不是让整个流程失败
 
 ---
 
@@ -275,10 +275,16 @@ okx market tickers SWAP > /tmp/tickers.txt
 
 ---
 
-## 📋 报告输出格式（Phase 1.7 — 六大模块视角）
+## 📋 报告输出格式（Phase 2.0）
 
 ```markdown
-# 🦊 妖币雷达 Phase 1.7 扫描报告
+# 🦊 妖币雷达 Phase 2.0 扫描报告
+
+## Executive Summary
+- 扫描候选数
+- 可执行建议数
+- 当前市场偏向
+- 优先关注币种
 
 ## 📊 大盘环境
 | 指标 | 数值 | 方向 |
@@ -286,28 +292,31 @@ okx market tickers SWAP > /tmp/tickers.txt
 | BTC 价格 | $XXX | ↑/↓/横 |
 | 市场判断 | 多头/空头/均可 | — |
 
-## 🔥 社区活跃度 TOP10（Binance Alpha — count24h）
+## 🎯 合约建议
+| 币种 | 方向 | 置信度 | 入场区间 | 止损 | 止盈1 | 止盈2 |
 
-## 🏆 机会队列（Phase 1.7 六大模块评分）
+## 🏆 机会队列（Provider + Radar Logic）
 
-| 评级 | 币种 | 方向 | 总分 | 安全 | 量价 | 趋势 | 社交 | 环境 | 费率 |
-|---|---|---|---|---:|---:|---:|---:|---:|---:|
-| 🏆 | BTC | 🔴做空 | **87** | 20 | 28 | 15 | 12 | 0 | 12 |
+| 评级 | 币种 | 方向 | 总分 | 置信度 | 可执行 | 安全 | 量价 | 趋势 | 社交 | 环境 | 费率 |
 
-### 详细信号（TOP3）
+### 详细信号（TOP3，含 entry_reasons）
 ### ❌ 安全否决区
-### 📋 评分模型说明（Phase 1.7 — 对齐 Obsidian 五大模块）
+### 🚀 GMGN Chain层机会板块
 ```
 
 ## 📁 数据存储
 
 ```
 ~/meme-radar/scan_[YYYYMMDD_HHMMSS]/
-├── 00_btc_status.txt          ← BTC大盘状态
-├── 01_all_tickers.txt         ← OKX 全量 USDT-M SWAP tickers
-├── 02_binance_batch.txt       ← Binance ticker + funding + K线（JSON）
-├── 04_binance_alpha.txt       ← Binance Alpha token-list（JSON）
-└── report.md                  ← Phase 1.7 最终报告
+├── 00_btc_status.json         ← BTC大盘状态
+├── 01_all_tickers.json        ← OKX 全量 USDT-M SWAP tickers
+├── 02_binance_batch.json      ← provider ticker + funding + K线可用性
+├── 04_binance_alpha.json      ← Binance Alpha token-list
+├── 05_gmgn_sol_trending.json  ← GMGN SOL 热门币
+├── 06_gmgn_bsc_trending.json  ← GMGN BSC 热门币
+├── 07_gmgn_signals.json       ← GMGN 聪明钱信号
+├── 08_gmgn_trenches_sol.json  ← GMGN 新币数据
+└── report.md                  ← Phase 2.0 最终报告
 ```
 
 ---
@@ -332,36 +341,37 @@ Phase 1.7 对齐 Obsidian `妖币判断指标.md` 的评分框架，但以下数
 
 ---
 
-## 🚀 Phase 2 规划（自动化 + TG推送）
+## 🚀 后续规划（自动化 + 推送）
 
-Phase 1.7 已完成核心评分体系对齐。Phase 2 聚焦自动化：
+Phase 2.0 已完成 provider + logic 融合。下一步聚焦自动化：
 
 | 功能 | 状态 | 说明 |
 |---|---|---|
-| 一键自动脚本 | ✅ Phase 1.7 | `scripts/auto-run.py` 六大模块评分 |
-| ATR/EMA 趋势结构 | ✅ Phase 1.7 | Binance K线实时计算 |
-| 安全否决层 | ✅ Phase 1.7 | Module 1 硬否决土狗 |
-| Obsidian 对齐 | ✅ Phase 1.7 | 五大模块评分框架 |
+| 一键自动脚本 | ✅ Phase 2.0 | provider + 评分 + 交易计划 |
+| 配置化阈值 | ✅ Phase 2.0 | `scripts/config.py` |
+| 纯逻辑评分测试 | ✅ Phase 2.0 | `tests/test_radar_logic.py` |
+| 执行摘要与置信度 | ✅ Phase 2.0 | 报告层已接入 |
 | 定时扫描（cron）| 🔜 待做 | 每6h自动跑，signal >= 65 才推送 |
 | TG 推送 | 🔜 待做 | 有强信号时推送到 Home Channel |
 | Real 盘小资金测试 | 🔜 待做 | 信号评分 85+ 后才考虑 |
 
-Phase 2 触发词：**"升级妖币雷达"** 或 **"开启定时扫描"** 或 **"妖币 TG 推送"**
+后续触发词：**"升级妖币雷达"** 或 **"开启定时扫描"** 或 **"妖币 TG 推送"**
 
 ---
 
 ## 🛠️ 一键自动脚本
 
 ```bash
-python3 ~/.hermes/skills/meme-coin-radar/scripts/auto-run.py
+python3 scripts/auto-run.py
 ```
 
-脚本自动完成 Phase 1.7 全流程：
+脚本自动完成 Phase 2.0 全流程：
 1. BTC 大盘状态检查
 2. Binance Alpha count24h 社区活跃度
-3. OKX 全量 USDT-M SWAP tickers 解析
-4. Binance 批量 ticker + funding + 50根1h K线
-5. **六大模块量化评分**（安全/量价/趋势/社交/环境/费率）
-6. 输出完整报告到 `~/meme-radar/scan_XXX/report.md`
+3. GMGN 热门币 / 聪明钱 / 新币扫描
+4. OKX 全量 USDT-M SWAP tickers 解析
+5. Binance 官方 skill 命令风格的批量 ticker + funding + K线
+6. **六大模块量化评分**（安全/量价/趋势/社交/环境/费率）
+7. 生成 `Executive Summary + 合约建议 + 详细信号` 报告到 `~/meme-radar/scan_XXX/report.md`
 
 *⚠️ 本报告仅供参考，不构成投资建议。DYOR！*
