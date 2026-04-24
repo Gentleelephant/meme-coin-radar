@@ -10,7 +10,7 @@ metadata:
   phase: "1.8"
   data_sources: ["okx-market", "binance-fapi-klines", "binance-alpha", "gmgn-market"]
   obsidian_alignment: "对齐 资料库/妖币判断指标.md 五大模块"
-  output: "analysis report + raw data to ~/.hermes/meme-radar/"
+  output: "analysis report + raw data to ~/meme-radar/"
   auto_script: "scripts/auto-run.py"
 ---
 
@@ -302,7 +302,7 @@ okx market tickers SWAP > /tmp/tickers.txt
 ## 📁 数据存储
 
 ```
-~/.hermes/meme-radar/scan_[YYYYMMDD_HHMMSS]/
+~/meme-radar/scan_[YYYYMMDD_HHMMSS]/
 ├── 00_btc_status.txt          ← BTC大盘状态
 ├── 01_all_tickers.txt         ← OKX 全量 USDT-M SWAP tickers
 ├── 02_binance_batch.txt       ← Binance ticker + funding + K线（JSON）
@@ -362,6 +362,6 @@ python3 ~/.hermes/skills/meme-coin-radar/scripts/auto-run.py
 3. OKX 全量 USDT-M SWAP tickers 解析
 4. Binance 批量 ticker + funding + 50根1h K线
 5. **六大模块量化评分**（安全/量价/趋势/社交/环境/费率）
-6. 输出完整报告到 `~/.hermes/meme-radar/scan_XXX/report.md`
+6. 输出完整报告到 `~/meme-radar/scan_XXX/report.md`
 
 *⚠️ 本报告仅供参考，不构成投资建议。DYOR！*
