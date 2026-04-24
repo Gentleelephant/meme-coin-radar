@@ -28,6 +28,31 @@ metadata:
 
 ---
 
+## 🔧 数据步骤与 Skill 映射表
+
+> **说明**：运行 `auto-run.py` 脚本时，各步骤数据获取方式一览。
+> 脚本直接调用底层命令/API，不需要预先加载任何 skill。
+> 以下表格仅供理解数据血缘和维护参考。
+
+| Step | 数据内容 | 获取方式 | 底层命令 / API | 对应 Skill（参考） |
+|---:|---|---|---|---|
+| 0 | BTC 大盘状态 | `subprocess.run("okx market ticker...")` | OKX REST CLI | `okx-cex-market` |
+| 0.5 | Binance Alpha 社区活跃度 | `subprocess.run("npx @binance/binance-cli alpha token-list")` | Binance Alpha API | `binance` |
+| 1 | OKX 全量 USDT-M SWAP tickers | `subprocess.run("okx market tickers SWAP")` | OKX REST CLI | `okx-cex-market` |
+| 2 | Binance ticker + funding + K线 | `urllib.request` 直接调 REST API | `fapi.binance.com` | `binance` |
+| G1 | GMGN SOL 热门代币排行 | `gmgn_api()` → `/v1/market/rank` + npx fallback | GMGN REST API + npx gmgn-cli | `gmgn-market` |
+| G2 | GMGN BSC 热门代币排行 | 同上，换 `chain="bsc"` | GMGN REST API + npx gmgn-cli | `gmgn-market` |
+| G3 | GMGN 聪明钱实时信号 | `gmgn_api()` → `/v1/market/token_signal` + npx fallback | GMGN REST API + npx gmgn-cli | `trading-signal`（参考） |
+| G4 | GMGN Pump.fun 新代币 | `subprocess.run("npx gmgn-cli market trenches...")` | npx gmgn-cli | `okx-dex-trenches`（参考） |
+| 3 | 六大模块评分计算 | 本地 Python（无外部调用） | — | 无，纯计算逻辑 |
+
+> **⚠️ 依赖说明**：
+> - `npx @binance/binance-cli` — Node.js 环境，npx 自动下载
+> - `npx gmgn-cli` — Node.js 环境，GMGN API Key 配置在 `~/.config/gmgn/.env`
+> - OKX/Binance REST — 无需认证，直接 HTTP 调用
+
+---
+
 ## ⚠️ OKX Demo 模式限制说明（重要！）
 
 OKX Demo 环境（`okx --demo`）不支持以下命令：
