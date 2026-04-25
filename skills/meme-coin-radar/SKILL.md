@@ -11,7 +11,7 @@ metadata:
   data_sources: ["okx-market", "binance-cli", "binance-alpha", "gmgn-market", "hyperliquid-fallback"]
   obsidian_alignment: "对齐 妖币判断指标.md 五大模块，并增加执行摘要与入场建议"
   output: "analysis report + raw data to $XDG_STATE_HOME/meme-coin-radar/ or ~/.local/state/meme-coin-radar/ (fallback: system temp dir)"
-  auto_script: "scripts/auto-run.py"
+  auto_script: "skills/meme-coin-radar/scripts/auto-run.py"
 ---
 
 # 🦊 妖币雷达 Phase 2.0 — Provider + Radar Logic 融合版
@@ -19,8 +19,8 @@ metadata:
 > **定位**：从多 provider 数据里筛出值得做合约的妖币，并直接给出方向、入场区间、止盈止损和仓位建议。
 > **Phase 2.0 融合点**：
 > - 保留当前项目的 provider/fallback 架构：`OKX + Binance + GMGN + fallback`
-> - 引入 `crypto-signal-radar` 的配置层：`scripts/config.py`
-> - 引入纯逻辑评分层：`scripts/radar_logic.py`
+> - 引入 `crypto-signal-radar` 的配置层：`skills/meme-coin-radar/scripts/config.py`
+> - 引入纯逻辑评分层：`skills/meme-coin-radar/scripts/radar_logic.py`
 > - 报告新增 `Executive Summary`、`confidence`、`entry_reasons`
 > - 合约建议不再只给分数，还会输出可执行交易计划
 > **Obsidian 对齐**：评分权重和阈值参考 `妖币判断指标.md` 的五大模块体系
@@ -342,8 +342,8 @@ Phase 2.0 已完成 provider + logic 融合。下一步聚焦自动化：
 | 功能 | 状态 | 说明 |
 |---|---|---|
 | 一键自动脚本 | ✅ Phase 2.0 | provider + 评分 + 交易计划 |
-| 配置化阈值 | ✅ Phase 2.0 | `scripts/config.py` |
-| 纯逻辑评分测试 | ✅ Phase 2.0 | `tests/test_radar_logic.py` |
+| 配置化阈值 | ✅ Phase 2.0 | `skills/meme-coin-radar/scripts/config.py` |
+| 纯逻辑评分测试 | ✅ Phase 2.0 | `skills/meme-coin-radar/tests/test_radar_logic.py` |
 | 执行摘要与置信度 | ✅ Phase 2.0 | 报告层已接入 |
 | 定时扫描（cron）| 🔜 待做 | 每6h自动跑，signal >= 65 才推送 |
 | TG 推送 | 🔜 待做 | 有强信号时推送到 Home Channel |
@@ -356,7 +356,7 @@ Phase 2.0 已完成 provider + logic 融合。下一步聚焦自动化：
 ## 🛠️ 一键自动脚本
 
 ```bash
-python3 scripts/auto-run.py
+python3 skills/meme-coin-radar/scripts/auto-run.py
 ```
 
 脚本自动完成 Phase 2.0 全流程：
