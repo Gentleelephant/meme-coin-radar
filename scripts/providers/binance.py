@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+import time
+
+from typing import Any, Optional
 
 from . import hyperliquid
-from .common import http_json, json_out
+from .common import FetchStatus, http_json, http_json_safe, json_out, json_out_safe
 
 # Official Binance skill references:
-# - alpha token-list
-# - futures-usds ticker24hr-price-change-statistics
-# - futures-usds get-funding-rate-info
-# - futures-usds kline-candlestick-data
 BINANCE_ALPHA_TOKEN_LIST_CMD = "npx -y @binance/binance-cli alpha token-list --json"
 BINANCE_FUTURES_TICKER_CMD = (
     "npx -y @binance/binance-cli futures-usds ticker24hr-price-change-statistics --symbol {symbol}USDT --json"
@@ -22,6 +20,8 @@ BINANCE_FUTURES_KLINES_CMD = (
 )
 
 _FUNDING_INFO_CACHE: dict | list | None = None
+_FUNDING_CACHE_TTL_SECONDS = 900  # 15 minutes
+_FUNDING_CACHE_TS: float = 0.0
 
 
 def alpha_token_list() -> dict:
@@ -74,9 +74,11 @@ def futures_ticker(symbol: str) -> Optional[dict]:
 
 
 def futures_funding(symbol: str) -> Optional[dict]:
-    global _FUNDING_INFO_CACHE
-    if _FUNDING_INFO_CACHE is None:
+    global _FUNDING_INFO_CACHE, _FUNDING_CACHE_TS
+    now = time.time()
+    if _FUNDING_INFO_CACHE is None or (now - _FUNDING_CACHE_TS) > _FUNDING_CACHE_TTL_SECONDS:
         _FUNDING_INFO_CACHE = json_out(BINANCE_FUTURES_FUNDING_INFO_CMD, timeout=15)
+        _FUNDING_CACHE_TS = now
     data = _FUNDING_INFO_CACHE
     if not data:
         return _premium_index_funding(symbol) or hyperliquid.funding(symbol)
@@ -114,7 +116,11 @@ def futures_funding(symbol: str) -> Optional[dict]:
 
 
 def _premium_index_funding(symbol: str) -> Optional[dict]:
-    data = http_json(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol.upper()}USDT", timeout=10)
+    data, status = http_json_safe(
+        f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol.upper()}USDT",
+        timeout=10,
+        source="binance-premiumIndex",
+    )
     if not isinstance(data, dict):
         return None
     try:
@@ -154,3 +160,57 @@ def futures_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Option
             except (ValueError, TypeError):
                 continue
     return result if result else hyperliquid.klines(symbol, interval=interval, limit=limit)
+
+
+def open_interest(symbol: str) -> dict[str, Any]:
+    """
+    Fetch OI with explicit error typing (roadmap P0-2).
+    Returns dict always; caller checks 'status' field.
+    """
+    sym = symbol.upper()
+    url = f"https://fapi.binance.com/fapi/v1/openInterest?symbol={sym}USDT"
+    data, status = http_json_safe(url, timeout=10, source="binance-oi")
+
+    if not status.ok or not isinstance(data, dict):
+        return {
+            "oi": None,
+            "oi_change_pct": None,
+            "timestamp": int(time.time() * 1000),
+            "source": "binance",
+            "status": status.to_dict(),
+            "error_type": status.error_type,
+        }
+
+    try:
+        oi = float(data.get("openInterest", 0))
+        ts = int(data.get("time", 0))
+    except (ValueError, TypeError):
+        return {
+            "oi": None,
+            "oi_change_pct": None,
+            "timestamp": int(time.time() * 1000),
+            "source": "binance",
+            "status": status.to_dict(),
+            "error_type": FetchStatus.PARSE_ERROR,
+        }
+
+    # Historical OI for 24h change direction (1d period, last 2 points)
+    oi_change_pct = 0.0
+    hist_url = f"https://fapi.binance.com/fapi/v1/openInterestHist?symbol={sym}USDT&period=1d&limit=2"
+    hist, hist_status = http_json_safe(hist_url, timeout=10, source="binance-oi-hist")
+    if isinstance(hist, list) and len(hist) >= 2:
+        try:
+            prev = float(hist[-2].get("sumOpenInterest", 0))
+            if prev > 0:
+                oi_change_pct = (oi - prev) / prev * 100
+        except (ValueError, TypeError, KeyError, IndexError):
+            pass
+
+    return {
+        "oi": oi,
+        "oi_change_pct": oi_change_pct,
+        "timestamp": ts,
+        "source": "binance",
+        "status": status.to_dict(),
+        "error_type": None,
+    }

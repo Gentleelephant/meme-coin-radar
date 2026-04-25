@@ -1,40 +1,40 @@
 #!/usr/bin/env python3
 """
-妖币雷达 Phase 2.0 — Skill Dispatcher
-────────────────────────────────────
-这一层只暴露项目需要的稳定接口，具体实现下沉到 providers。
-
-Skill 映射关系:
-  Step 0  BTC大盘      → okx-cex-market / Hyperliquid fallback
-  Step 1  全量Tickers  → okx-cex-market / Hyperliquid fallback
-  Step 0.5 BinanceAlpha→ binance-cli alpha token-list
-  Step 2  Binance合约  → binance-cli futures-usds (官方 skill 命令名) / Hyperliquid fallback
-  Step G1/G2 GMGN热门  → gmgn-market
-  Step G3 GMGN信号     → gmgn-market / trading-signal (参考)
-  Step G4 GMGN新代币   → gmgn-market
+妖币雷达 Phase 2.1 — Skill Dispatcher (P0 改进版)
+改进点:
+  - batch_binance() 增加结构化 fetch_status 收集
+  - OI 返回带显式状态
 """
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
-from typing import Optional
+from typing import Any, Optional
 
-from providers.binance import alpha_token_list, futures_funding, futures_klines, futures_ticker
-from providers.common import json_out, load_gmgn_key
-from providers.gmgn import security_score, signal as gmgn_signal_provider, trenches as gmgn_trenches_provider, trending as gmgn_trending_provider
+from providers.binance import (
+    alpha_token_list,
+    futures_funding,
+    futures_klines,
+    futures_ticker,
+    open_interest as binance_open_interest,
+)
+from providers.common import FetchStatus, json_out, json_out_safe, load_gmgn_key
+from providers.gmgn import (
+    security_score,
+    signal as gmgn_signal_provider,
+    trenches as gmgn_trenches_provider,
+    trending as gmgn_trending_provider,
+)
 from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
+from providers.okx import account_equity as okx_account_equity_impl
 
-BATCH_WORKERS = 8
-BATCH_TIMEOUT_SECONDS = 45
+BATCH_WORKERS = 12
+BATCH_TIMEOUT_SECONDS = 60
 
 
 def okx_btc_status() -> dict:
-    """
-    Step 0: 获取 BTC 大盘状态
-    优先: okx market ticker BTC-USDT-SWAP --json
-    回退: Hyperliquid public perp metadata
-    """
     data = json_out("okx market ticker BTC-USDT-SWAP --json", timeout=15)
     if not data:
         return hyperliquid_btc_status()
@@ -80,11 +80,6 @@ def okx_btc_status() -> dict:
 
 
 def okx_swap_tickers() -> list:
-    """
-    Step 1: 获取全量 USDT-M SWAP tickers
-    优先: okx market tickers SWAP --json
-    回退: Hyperliquid public perp metadata
-    """
     data = json_out("okx market tickers SWAP --json", timeout=20)
     if not data:
         return hyperliquid_swap_tickers()
@@ -139,23 +134,23 @@ def okx_funding_rate(inst_id: str) -> Optional[dict]:
         return None
 
 
+def okx_account_equity() -> float:
+    return okx_account_equity_impl()
+
+
 def binance_alpha() -> dict:
-    """官方 Binance skill: `binance-cli alpha token-list --json`."""
     return alpha_token_list()
 
 
 def binance_ticker(symbol: str) -> Optional[dict]:
-    """官方 Binance skill: `binance-cli futures-usds ticker24hr-price-change-statistics`."""
     return futures_ticker(symbol)
 
 
 def binance_funding(symbol: str) -> Optional[dict]:
-    """官方 Binance skill: `binance-cli futures-usds get-funding-rate-info`."""
     return futures_funding(symbol)
 
 
 def binance_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[list]:
-    """官方 Binance skill: `binance-cli futures-usds kline-candlestick-data`."""
     return futures_klines(symbol, interval=interval, limit=limit)
 
 
@@ -203,25 +198,60 @@ def gmgn_security_score(token: dict) -> dict:
 
 
 def _fetch_one_coin(symbol: str) -> tuple:
+    """Fetch all data for a single coin with status tracking and timestamps."""
+    status_map: dict[str, Any] = {}
+    now = int(time.time())
+
+    ticker = binance_ticker(symbol)
+    status_map["ticker"] = {"ok": ticker is not None, "source": "binance", "fetched_at": now}
+
+    funding = binance_funding(symbol)
+    status_map["funding"] = {"ok": funding is not None, "source": "binance", "fetched_at": now}
+
+    klines = binance_klines(symbol, interval="1h", limit=50)
+    status_map["klines"] = {"ok": klines is not None, "source": "binance", "fetched_at": now}
+
+    klines_4h = binance_klines(symbol, interval="4h", limit=50)
+    status_map["klines_4h"] = {"ok": klines_4h is not None, "source": "binance", "fetched_at": now}
+
+    klines_1d = binance_klines(symbol, interval="1d", limit=8)
+    status_map["klines_1d"] = {"ok": klines_1d is not None, "source": "binance", "fetched_at": now}
+
+    oi = binance_open_interest(symbol)
+    status_map["oi"] = oi.get("status", {"ok": oi.get("error_type") is None, "source": "binance", "fetched_at": now})
+
     return symbol, {
-        "ticker": binance_ticker(symbol),
-        "funding": binance_funding(symbol),
-        "klines": binance_klines(symbol, interval="1h", limit=50),
+        "ticker": ticker,
+        "funding": funding,
+        "klines": klines,
+        "klines_4h": klines_4h,
+        "klines_1d": klines_1d,
+        "oi": oi,
+        "_fetched_at": now,
+        "_status": status_map,
     }
 
 
 def batch_binance(coins: list) -> dict:
-    results = {}
+    results: dict[str, Any] = {}
+    fetch_status: dict[str, Any] = {}
+
     with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as executor:
         futures = {executor.submit(_fetch_one_coin, coin): coin for coin in coins}
         try:
             for future in as_completed(futures, timeout=BATCH_TIMEOUT_SECONDS):
                 symbol = futures[future]
                 try:
-                    resolved_symbol, payload = future.result(timeout=20)
+                    resolved_symbol, payload = future.result(timeout=25)
                     results[resolved_symbol] = payload
-                except Exception:
-                    results[symbol] = {"ticker": None, "funding": None, "klines": None}
+                    fetch_status[resolved_symbol] = payload.get("_status", {})
+                except Exception as exc:
+                    results[symbol] = {
+                        "ticker": None, "funding": None, "klines": None,
+                        "klines_4h": None, "klines_1d": None, "oi": None,
+                        "_status": {"_batch_error": str(exc)},
+                    }
+                    fetch_status[symbol] = {"_batch_error": str(exc)}
         except TimeoutError:
             pass
 
@@ -229,8 +259,14 @@ def batch_binance(coins: list) -> dict:
             if symbol in results:
                 continue
             future.cancel()
-            results[symbol] = {"ticker": None, "funding": None, "klines": None}
-    return results
+            results[symbol] = {
+                "ticker": None, "funding": None, "klines": None,
+                "klines_4h": None, "klines_1d": None, "oi": None,
+                "_status": {"_batch_error": "timeout"},
+            }
+            fetch_status[symbol] = {"_batch_error": "timeout"}
+
+    return {"results": results, "fetch_status": fetch_status}
 
 
 __all__ = [
@@ -245,6 +281,7 @@ __all__ = [
     "gmgn_trending",
     "gmgn_trenches",
     "load_gmgn_key",
+    "okx_account_equity",
     "okx_btc_status",
     "okx_funding_rate",
     "okx_swap_tickers",

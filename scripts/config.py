@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,13 +29,36 @@ def _get_list(name: str, default: str) -> tuple[str, ...]:
     return tuple(part.strip().upper() for part in raw.split(",") if part.strip())
 
 
+def _default_output_dir() -> Path:
+    xdg_state_home = os.environ.get("XDG_STATE_HOME", "").strip()
+    if xdg_state_home:
+        return Path(xdg_state_home).expanduser() / "meme-coin-radar"
+    return Path("~/.local/state").expanduser() / "meme-coin-radar"
+
+
+def ensure_output_dir(preferred: Path) -> Path:
+    candidates = [preferred, Path(tempfile.gettempdir()) / "meme-coin-radar"]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except OSError:
+            continue
+    raise OSError("Unable to create a writable output directory for meme-coin-radar")
+
+
 @dataclass
 class Settings:
-    output_dir: Path = field(default_factory=lambda: Path(_get_env("RADAR_OUTPUT_DIR", "~/meme-radar")).expanduser())
+    output_dir: Path = field(default_factory=lambda: Path(_get_env("RADAR_OUTPUT_DIR", str(_default_output_dir()))).expanduser())
     top_n: int = field(default_factory=lambda: _get_int("RADAR_TOP_N", 8))
     recommendation_top_n: int = field(default_factory=lambda: _get_int("RADAR_RECOMMENDATION_TOP_N", 3))
-    min_watch_score: float = field(default_factory=lambda: _get_float("RADAR_MIN_WATCH_SCORE", 30.0))
-    min_recommend_score: float = field(default_factory=lambda: _get_float("RADAR_MIN_RECOMMEND_SCORE", 45.0))
+    # Obsidian-aligned thresholds
+    min_watch_score: float = field(default_factory=lambda: _get_float("RADAR_MIN_WATCH_SCORE", 50.0))
+    min_recommend_score: float = field(default_factory=lambda: _get_float("RADAR_MIN_RECOMMEND_SCORE", 75.0))
     min_direction_bias: float = field(default_factory=lambda: _get_float("RADAR_MIN_DIRECTION_BIAS", 18.0))
     min_direction_gap: float = field(default_factory=lambda: _get_float("RADAR_MIN_DIRECTION_GAP", 6.0))
     key_coins: tuple[str, ...] = field(

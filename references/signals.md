@@ -1,7 +1,7 @@
-# 信号判断规则 & 量化评分模型 Phase 1.7
+# 信号判断规则 & 量化评分模型 Phase 2.0 (Obsidian 对齐版)
 
-> 对齐 Obsidian `资料库/妖币判断指标.md` 五大模块评分体系。
-> Phase 1.7 六大模块：安全/量价/趋势结构/社交叙事/市场环境/资金费率
+> 对齐 Obsidian 知识库「妖币判断指标」五大模块评分体系。
+> Phase 2.0 五大模块：安全与流动性(25) / 量价与趋势(30) / 链上与聪明钱(20) / 社交与叙事(15) / 市场环境(10)
 
 ## 核心逻辑
 
@@ -9,187 +9,191 @@
 - 正费率：多头付钱给空头 → 做空信号
 - 负费率：空头付钱给多头 → 做多信号
 
-Phase 1.7 新增：ATR14 + EMA20/50 趋势结构，安全否决层，六大模块评分。
+Phase 2.0 改进：
+- 五大模块权重对齐 Obsidian（25/30/20/15/10）
+- 7 条硬否决规则（新增合约风险、流动性、部署者持仓等）
+- OI 四象限接入 Binance open-interest 历史数据
+- 双周期验证（4H + 1H）
+- R:R >= 1.5 校验
+- 精确仓位计算（基于账户权益 × 止损幅度）
 
 ---
 
-## 一、Phase 1.7 六大模块评分体系
+## 一、Obsidian 五大模块评分体系（总分100）
 
-每个候选币从 6 个模块打分，满分 100+ 分（共振加成可达 110）。
-
-| 模块 | 满分 | 对齐 Obsidian | 核心指标 |
-|---|---|---|---|
-| Module 1: 安全 | 25 | 安全与流动性 | 成交额/Binance上市状态 |
-| Module 2: 量价 | 35 | 量价与持仓 | 价格变动/成交额/ATR波动 |
-| Module 3: 趋势结构 | 25 | ATR/EMA趋势 | EMA20/50排列 + ATR波动空间 |
-| Module 4: 社交叙事 | 20 | 社交与叙事 | Binance Alpha count24h |
-| Module 5: 市场环境 | 10 | 市场环境 | BTC 方向 |
-| Module 6: 资金费率 | 20 | OI/聪明钱 | funding rate 正负 |
-| 共振加成 | +18 | — | 特定条件组合 |
+| 模块 | 满分 | 对齐 Obsidian | 核心指标 | 文件函数 |
+|---|---|---|---|---|
+| M1: 安全与流动性 | 25 | 安全与流动性 | 成交额 / 交易所状态 / GMGN安全 | `_score_safety_liquidity()` |
+| M2: 量价与趋势 | 30 | 量价与持仓 | ATR / 成交额 / 价格变化 / EMA趋势 / 4H共振 | `_score_price_volume_trend()` |
+| M3: 链上与聪明钱 | 20 | 链上与聪明钱 | 聪明钱 / Holder增长 / OI四象限 / 资金费率 / 买/卖比 | `_score_onchain_smart_money()` |
+| M4: 社交与叙事 | 15 | 社交与叙事 | Alpha count24h / 社交提及(预留) | `_score_social_narrative()` |
+| M5: 市场环境 | 10 | 市场环境 | BTC 方向 | `_score_market_regime()` |
 
 ---
 
-## 二、Module 3: 趋势结构详解（Phase 1.7 新增）
+## 二、7 条硬否决规则（直接 reject）
 
-### ATR14 计算
-
-```
-真实波幅 TR = max(H-L, |H-Pclose|, |L-Pclose|)
-ATR14 = sum(TR[-14:]) / 14
-atr_pct = ATR14 / price   # 相对波动率
-```
-
-数据来源：Binance `/fapi/v1/klines` 1h K线，取最近 50 根。
-
-### EMA 计算
-
-```
-EMA_n = Close[n] * 2/(n+1) + EMA_(n-1) * (1-2/(n+1))
-```
-
-计算 EMA20 和 EMA50，趋势结构判断：
-
-| 趋势结构 | 条件 | 含义 | 评分 |
-|---|---|---|---|
-| bullish | price > EMA20 > EMA50 | 多头排列，最强趋势 | +12 (M3) |
-| bearish | EMA50 > EMA20 > price | 空头排列 | +8 (M3) |
-| weak_recovery | price > EMA20 > EMA50 | 价格反弹，未突破EMA50 | +6 (M3) |
-| caution | EMA20 > price > EMA50 | EMA20已下穿 | +2 (M2) |
-| unknown | 数据不足 | — | 跳过 |
-
-### ATR 波动空间评分
-
-| atr_pct 区间 | 含义 | Module 3 加分 |
-|---|---|---|
-| >= 12% | 极端波动，高风险高收益 | +8 |
-| 8-12% | 良好波动空间 | +5 |
-| 4-8% | 一般波动 | +2 |
-| < 4% 且 atr_pct < 0.8x 30日均值 | 波动不足 | 硬否决（Obsidian标准）|
+| # | 规则 | 条件 | 代码位置 |
+|---|------|------|----------|
+| 1 | 合约高危权限 | `contract_risk_flags` 包含 `mintable`/`blacklist`/`pausable` 且权限未放弃 | `_hard_reject_check()` |
+| 2 | 流动性过低 | `liquidity_usd < 50000` | `_hard_reject_check()` |
+| 3 | 部署者持仓过高 | `deployer_holder_ratio > 0.1` | `_hard_reject_check()` |
+| 4 | 持仓过度集中 | `top10_holder_ratio > 0.35` | `_hard_reject_check()` |
+| 5 | 交易不可用 | 买卖滑点极高或明显无法正常卖出 | 当前仅记录风险笔记，未自动检测 |
+| 6 | 明显刷量 | `is_wash_trading=True` 或 volume/trades/buyers 严重不匹配 | `_hard_reject_check()` |
+| 7 | 波动空间不足 | `atr_pct_14 < 0.04` 且 `atr_pct_14_vs_30d_avg < 0.8` | `_hard_reject_check()`（30d均值为Phase 3预留） |
+| — | 成交额极低（原有） | `volume < $5M` | `_hard_reject_check()` |
 
 ---
 
-## 三、Module 1: 安全否决层（Phase 1.7 新增）
+## 三、方向信号与决策门槛
 
-### 硬否决规则（直接 reject，不进入评分）
+### 三档输出标准
 
-| 规则 | 条件 | 原因 |
-|---|---|---|
-| 成交额过低 | vol < $5M | 疑似土狗，流动性极差 |
-| Binance无数据 | funding + ticker 均不可用 | 无法验证安全性 |
+| 总分 | 决策 | 说明 |
+|------|------|------|
+| < 50 | `reject` | 直接排除 |
+| 50–74 | `watchlist` | 进入观察池 |
+| >= 75 | `monster_candidate` | 升级为重点预警 |
 
-### 软安全评分
-
-| 条件 | 分数 |
-|---|---|
-| Binance funding API 可用（已上线） | +8 |
-| 仅 Binance ticker 可用 | +4 |
-| vol >= $100M | +8 |
-| $20M <= vol < $100M | +3 |
-| vol >= $100M 且 fr > 0.5% | +4（多头接盘明显）|
+### `can_enter` 条件（可执行交易）
+- `total >= 75`
+- `dominant_score >= min_direction_bias` (默认 18)
+- `bias_gap >= min_direction_gap` (默认 6)
+- `R:R >= 1.5`（交易计划中校验）
 
 ---
 
-## 四、Module 4: 社交叙事（Binance Alpha count24h）
+## 四、各模块评分细则
 
-> `count24h` = 24h 链上交易次数，反映社区真实活跃度。
-> 获取命令：`npx -y @binance/binance-cli alpha token-list --json`
+### M1: 安全与流动性（0–25分）
 
-| count24h 区间 | 含义 | Module 4 得分 |
-|---|---|---|
-| > 100,000 + 有价格异动 | 极高活跃度，全网热点 | +10~15 |
-| 50,000–100,000 | 高活跃度 | +6~9 |
-| 20,000–50,000 | 中等活跃 | +3~5 |
-| > 50,000 但无价格异动 | 酝酿中，观察区 | +3 |
-| < 20,000 | 低活跃，信号弱 | +1 |
+| 子项 | 条件 | 分数 |
+|---|---|---:|
+| Volume >= $500M | 顶级流动性 | +8 |
+| Volume $100M–$500M | 良好流动性 | +5 |
+| Volume $20M–$100M | 中等流动性 | +3 |
+| Volume $5M–$20M | 勉强可交易 | +1 |
+| Funding API可用 | Binance已上线合约 | +5 |
+| 仅Ticker可用 | 降权 | +2 |
+| GMGN tag 绿色 | 链上安全良好 | +5 |
+| GMGN tag 黄色 | 轻微风险 | +2 |
+| rug_ratio < 0.1 | 极低Rug风险 | +4 |
+| top10 < 0.20 | 持仓分散 | +4 |
+| dev_hold < 0.10 | 开发团队控盘低 | +2 |
 
-### Alpha 交叉验证策略
+### M2: 量价与趋势（0–30分）
 
-- **做空信号 + Alpha 确认**：涨幅榜 + count24h > 50k → 追涨韭菜多，做空信号 +8~15
-- **做多信号 + Alpha 确认**：跌幅榜 + count24h > 50k → 抄底社区活跃，反弹概率高
-- **暴跌币做多**：跌幅 >10% + count24h > 50k + fr < -0.1% → 最佳做多窗口
+| 子项 | 条件 | 分数 |
+|---|---|---:|
+| ATR >= 12% | 极端波动 | +6 |
+| ATR 8–12% | 良好波动 | +4 |
+| ATR 4–8% | 一般波动 | +2 |
+| Volume >= $500M | 顶级成交 | +8 |
+| Volume $200M–$500M | 高成交 | +5 |
+| Volume $100M–$200M | 中等 | +3 |
+| Volume $50M–$100M | 一般 | +1 |
+| 价格变动 abs(chg) >= 30% | — | +6 |
+| 价格变动 abs(chg) >= 15% | — | +4 |
+| 价格变动 abs(chg) >= 5% | — | +2 |
+| 1H趋势 bullish | 多头排列 | +6 |
+| 1H趋势 bearish | 空头排列 | +4 |
+| 1H趋势 weak_recovery | 弱修复 | +2 |
+| 4H趋势与1H一致 | 双周期共振 | +4 |
+| 买盘主导 chg>3% 且 vol>$50M | — | +3 |
 
----
+### M3: 链上与聪明钱（0–20分，允许降到0）
 
-## 五、暴跌币做多 — 均值回归评分逻辑
+| 子项 | 条件 | 分数 |
+|---|---|---:|
+| smart_degen >= 5 | 强聪明钱 | +8 |
+| smart_degen >= 3 | 中等聪明钱 | +5 |
+| smart_degen >= 1 | 轻微聪明钱 | +2 |
+| holders_growth >= 25% | 快速扩散 | +6 |
+| holders_growth >= 10% | 中等增长 | +3 |
+| holders_growth >= 0% | 正增长 | +1 |
+| OI上升 + 价格上升 | 新多头建仓 | +4 |
+| OI上升 + 价格下跌 | 空头加仓压盘 | -2 |
+| OI下降 + 价格上升 | 多头止盈离场 | +2 |
+| OI下降 + 价格下跌 | 多空同时撤退 | -4 |
+| 资金费率 abs(fr) >= 2% | 极端费率 | +2 |
+| 资金费率 abs(fr) >= 1% | 显著费率 | +1 |
+| buyers/sellers >= 1.2 | 买盘主导 | +2 |
 
-> 妖币从高点暴跌，同时资金费率为负。此时应做"均值回归"而非"追涨"。
+### M4: 社交与叙事（0–15分）
 
-**暴跌反弹共振加成**：
-- 24h 跌幅 > 10% + fr < -0.1% → **+10 共振加成**（Module 2 联动）
-- 24h 跌幅 > 15% + fr < -0.1% → **+15 共振加成**
+| 子项 | 条件 | 分数 |
+|---|---|---:|
+| count24h >= 100k + 异动 | 全网热点 | +8 |
+| count24h 50k–100k | 高活跃 | +4~6 |
+| count24h 20k–50k | 中等活跃 | +2 |
+| count24h > 0 | 低活跃 | +1 |
 
-**为什么暴跌币值得做多？**
-- 资金费率负值 = 持有多头每小时躺赚（如 SPK 年化 -287%）
-- 超跌反弹 = 价格回归均值的概率提升
-- 成交额大 = 流动性好，出逃成本低
+### M5: 市场环境（0–10分）
 
----
-
-## 六、大盘环境判断规则
-
-| BTC 状态 | 市场判断 | Module 5 得分 |
-|---|---|---|
-| 24h涨跌 > +2% | 多头环境 | +7 |
-| 横盘（-2%~+2%） | 中性 | +4 |
-| 24h涨跌 < -2% | 空头环境 | +0 |
-
----
-
-## 七、信号等级划分
-
-| 等级 | 评分 | 操作 | 仓位建议 |
-|---|---|---|---|
-| 🏆 极强 | 85-100 | 优先入场 | 5%总资金，5x杠杆 |
-| ⭐ 强 | 65-84 | 入场 | 3-5%总资金，5x杠杆 |
-| 中 | 45-64 | 轻仓观察 | 1-2%总资金，3x杠杆 |
-| 🔶 弱 | 30-44 | 观望，参考 | 不建议开仓 |
-| ❌ 无效 | <30 | 过滤掉 | 不输出 |
-
----
-
-## 八、数据可用性说明
-
-| 数据 | 状态 | 说明 |
-|---|---|---|
-| ATR14 | ✅ 可获取 | Binance 1h K线计算 |
-| EMA20/50 | ✅ 可获取 | Binance 1h K线计算 |
-| 资金费率 | ✅ 可获取 | Binance premiumIndex |
-| Alpha count24h | ✅ 可获取 | binance-cli alpha token-list |
-| LP锁定比例 | ⚠️ 不可用 | 跳过 |
-| 前十持仓集中度 | ⚠️ 不可用 | 跳过 |
-| 合约高危权限 | ⚠️ 不可用 | 跳过 |
-| 部署者持仓占比 | ⚠️ 不可用 | 跳过 |
-| 持有人增长率 | ⚠️ 不可用 | 跳过 |
-| 聪明钱净流入 | ⚠️ 不可用 | 跳过 |
-| KOL独立提及数 | ⚠️ 不可用 | 用 count24h 替代 |
-| 叙事标签匹配 | ⚠️ 不可用 | 跳过 |
+| BTC 状态 | 得分 |
+|---|---:|
+| 上涨 > +2% | +7 |
+| 横盘（-2%~+2%） | +4 |
+| 下跌 < -2% | +0 |
 
 ---
 
-## 九、历史案例评分估算（Phase 1.7 六大模块）
+## 五、缺失字段降级规则
 
-### RAVE 做空
+| 条件 | 处理 |
+|------|------|
+| 核心字段缺失 >= 1 项 | `needs_manual_review = True` |
+| 核心字段缺失 >= 3 项 | `total_score` 强制上限 74，`decision = watchlist`，`can_enter = False` |
 
-| 模块 | 数值 | 得分 |
-|---|---|---|
-| Module 1: 安全 | vol=$2.9B, Binance可用 | +16 |
-| Module 2: 量价 | 跌幅 -22.9%, vol大 | +18 |
-| Module 3: 趋势结构 | EMA结构（需K线确认） | +待查 |
-| Module 4: Alpha | count24h=267,603 | +15 |
-| Module 5: 环境 | BTC下跌 | +0 |
-| Module 6: 费率 | +2.12%/8h | +15 |
-| 共振加成 | fr>0.5% + 跌>5% + 高活跃 | +8 |
-| **总分** | — | **72+** |
+核心字段白名单：`atr14`, `trend`, `oi`, `fundingRate`, `volume`, `alpha_count24h`
 
-### SPK 做多（暴跌反弹）
+---
 
-| 模块 | 数值 | 得分 |
-|---|---|---|
-| Module 1: 安全 | vol=$868M, Binance可用 | +14 |
-| Module 2: 量价 | 跌幅 -16.9%, vol大 | +16 |
-| Module 3: 趋势结构 | EMA结构（需K线确认） | +待查 |
-| Module 4: Alpha | count24h=146,968 | +12 |
-| Module 5: 环境 | BTC中性 | +4 |
-| Module 6: 费率 | -0.53%/8h | +15 |
-| 共振加成 | 暴跌反弹 fr<0.1% | +15 |
-| **总分** | — | **76+** |
+## 六、交易计划（build_trade_plan）
+
+### 参数计算
+- `risk_pct = ATR14% * 0.8`，clamped `[3.5%, 10%]`
+- `entry_buffer = risk_pct * 0.35`，clamped `[0.8%, 2.5%]`
+- `TP1 = risk_pct * 1.6`，min 5%
+- `TP2 = risk_pct * 2.4`，min 8%
+
+### R:R 校验
+- 以入场区间中点作为预期成交价
+- 若 `R:R < 1.5`，强制 `setup_label = "watch"`，并记录 `risk_notes`
+
+### 精确仓位
+- 从 OKX 拉取账户权益 `equity`
+- 风险系数：极强信号 3%，强信号 2%，中等信号 1%
+- `position_size_usd = equity * risk_ratio / stop_loss_pct`
+- 输出格式：`建议开仓 $XXX USDT（约 Y 个币）@ Zx 杠杆`
+
+---
+
+## 七、数据结构变更
+
+### score_candidate 新增参数
+- `klines_4h`: 4H K线（双周期验证）
+- `oi`: Open Interest 数据（OI四象限）
+- `equity`: 账户权益（仓位计算）
+
+### score_candidate 返回值新增字段
+- `symbol`, `total_score`, `hard_reject`, `reject_reasons`, `risk_notes`, `needs_manual_review`
+- `module_scores`: 使用 Obsidian 模块名（保留旧别名）
+
+### 输出文件
+- `report.md`: Markdown 报告
+- `result.json`: 标准 JSON 数组，便于接入数据库/监控
+
+---
+
+## 八、Phase 3 预留（后续迭代）
+
+| 功能 | 说明 | 依赖 |
+|------|------|------|
+| ATR 30日均值 | atr_pct_14_vs_30d_avg | 本地数据库 / historical klines |
+| Volume 7日均值 | volume_24h_vs_7d_avg | 本地数据库 |
+| Holder 增长率 | holders_growth_24h | GMGN 历史数据存储 |
+| Buy/Seller 比率 | buyers_24h / sellers_24h | GMGN API 字段确认 |
+| 社交多维度 | social_mentions, kol_unique_count | X API / tweetscout |
+| 叙事标签匹配 | narrative_tags | 热点词库定义 |

@@ -123,6 +123,17 @@ def trenches(chain: str = "sol", token_type: str = "new_creation", limit: int = 
     return []
 
 
+def _is_wash_trading_heuristic(volume: float, trades: int, buyers: int) -> bool:
+    if volume <= 0 or trades <= 0:
+        return False
+    avg_trade = volume / trades
+    if avg_trade > volume * 0.3 and trades < 5:
+        return True
+    if buyers > 0 and buyers / trades < 0.05:
+        return True
+    return False
+
+
 def security_score(token: dict) -> dict:
     try:
         rug = float(token.get("rug_ratio") or 0)
@@ -133,87 +144,90 @@ def security_score(token: dict) -> dict:
         dev_hold = float(token.get("dev_team_hold_rate") or 0)
         bundler = float(token.get("bundler_rate") or 0)
         creator_close = bool(token.get("creator_close", False))
+        deployer_ratio = float(token.get("deployer_holder_ratio") or 0)
+        liquidity = float(token.get("liquidity") or 0)
+        trades_24h = int(token.get("trades_24h") or 0)
+        buyers_24h = int(token.get("buyers_24h") or 0)
+        volume_24h = float(token.get("volume_24h") or token.get("volume") or 0)
+        holder_count = int(token.get("holder_count") or 0)
+        holders_growth_24h = float(token.get("holders_growth_24h") or 0)
+        sellers_24h = int(token.get("sellers_24h") or 0)
+
+        # Contract risk flags
+        crf = token.get("contract_risk_flags", [])
+        if isinstance(crf, str):
+            crf = [f.strip() for f in crf.split(",") if f.strip()]
+        dangerous = {"mintable", "blacklist", "pausable"}
+        has_dangerous = any(flag in dangerous for flag in crf)
+        ownership_renounced = bool(token.get("ownership_renounced", False))
 
         bonus = 0
         tag = "⚪ 普通"
+        reject = False
+        reason = ""
 
+        # Obsidian hard rejects (expanded from Phase 1.0)
         if wash:
-            return {
-                "reject": True,
-                "reason": "is_wash_trading=True 洗量作弊",
-                "bonus": 0,
-                "tag": "🔴 洗量",
-                "rug_ratio": rug,
-                "is_wash_trading": wash,
-                "top_10_holder_rate": top10,
-                "smart_degen_count": sm_count,
-                "renowned_count": kol_count,
-                "dev_hold_rate": dev_hold,
-                "bundler_rate": bundler,
-            }
-        if rug > 0.3:
-            return {
-                "reject": True,
-                "reason": f"rug_ratio={rug:.2f}>0.3 高风险",
-                "bonus": 0,
-                "tag": f"🔴 Rug({rug:.2f})",
-                "rug_ratio": rug,
-                "is_wash_trading": wash,
-                "top_10_holder_rate": top10,
-                "smart_degen_count": sm_count,
-                "renowned_count": kol_count,
-                "dev_hold_rate": dev_hold,
-                "bundler_rate": bundler,
-            }
-        if top10 > 0.60:
-            return {
-                "reject": True,
-                "reason": f"top10={top10:.0%}>60% 持仓过度集中",
-                "bonus": 0,
-                "tag": f"🔴 持仓({top10:.0%})",
-                "rug_ratio": rug,
-                "is_wash_trading": wash,
-                "top_10_holder_rate": top10,
-                "smart_degen_count": sm_count,
-                "renowned_count": kol_count,
-                "dev_hold_rate": dev_hold,
-                "bundler_rate": bundler,
-            }
+            reject = True
+            reason = "is_wash_trading=True 洗量作弊"
+            tag = "🔴 洗量"
+        elif has_dangerous and not ownership_renounced:
+            reject = True
+            reason = f"合约高危权限未放弃: {crf}"
+            tag = "🔴 合约高危"
+        elif liquidity > 0 and liquidity < 50000:
+            reject = True
+            reason = f"流动性=${liquidity:.0f}<$50K"
+            tag = "🔴 流动性不足"
+        elif deployer_ratio > 0.10:
+            reject = True
+            reason = f"部署者持仓={deployer_ratio:.1%}>10%"
+            tag = "🔴 部署者控盘"
+        elif top10 > 0.35:
+            reject = True
+            reason = f"top10={top10:.1%}>35% 持仓过度集中"
+            tag = "🔴 持仓集中"
+        elif _is_wash_trading_heuristic(volume_24h, trades_24h, buyers_24h):
+            reject = True
+            reason = "成交量与交易笔数/买家数严重不匹配，疑似刷量"
+            tag = "🔴 刷量"
 
-        if not creator_close and dev_hold > 0.10:
-            tag = f"🟡 Dev({dev_hold:.0%})"
-            bonus -= 3
-        else:
-            bonus += 2
-        if bundler > 0.3:
-            bonus -= 3
-            tag = f"🟡 机器占{bundler:.0%}"
-        else:
-            bonus += 2
+        if not reject:
+            if not creator_close and dev_hold > 0.10:
+                tag = f"🟡 Dev({dev_hold:.0%})"
+                bonus -= 3
+            else:
+                bonus += 2
+            if bundler > 0.3:
+                bonus -= 3
+                tag = f"🟡 机器占{bundler:.0%}"
+            else:
+                bonus += 2
 
-        if sm_count >= 5:
-            bonus += 12
-            tag = f"🟢 SM{sm_count}+KOL{kol_count}"
-        elif sm_count >= 3:
-            bonus += 8
-            tag = f"🟢 SM{sm_count}"
-        elif sm_count >= 1:
-            bonus += 4
-        if kol_count >= 3:
-            bonus += 6
-        elif kol_count >= 1:
-            bonus += 3
-        if rug < 0.1:
-            bonus += 5
-        elif rug < 0.2:
-            bonus += 3
-        if top10 < 0.20:
-            bonus += 5
-        elif top10 < 0.35:
-            bonus += 3
+            if sm_count >= 5:
+                bonus += 12
+                tag = f"🟢 SM{sm_count}+KOL{kol_count}"
+            elif sm_count >= 3:
+                bonus += 8
+                tag = f"🟢 SM{sm_count}"
+            elif sm_count >= 1:
+                bonus += 4
+            if kol_count >= 3:
+                bonus += 6
+            elif kol_count >= 1:
+                bonus += 3
+            if rug < 0.1:
+                bonus += 5
+            elif rug < 0.2:
+                bonus += 3
+            if top10 < 0.20:
+                bonus += 5
+            elif top10 < 0.35:
+                bonus += 3
 
         return {
-            "reject": False,
+            "reject": reject,
+            "reason": reason,
             "bonus": bonus,
             "tag": tag,
             "rug_ratio": rug,
@@ -223,6 +237,14 @@ def security_score(token: dict) -> dict:
             "renowned_count": kol_count,
             "dev_hold_rate": dev_hold,
             "bundler_rate": bundler,
+            "deployer_holder_ratio": deployer_ratio,
+            "liquidity": liquidity,
+            "contract_risk_flags": crf,
+            "ownership_renounced": ownership_renounced,
+            "holders": holder_count,
+            "holders_growth_24h": holders_growth_24h,
+            "buyers_24h": buyers_24h,
+            "sellers_24h": sellers_24h,
         }
     except Exception:
         return {
@@ -236,4 +258,12 @@ def security_score(token: dict) -> dict:
             "renowned_count": 0,
             "dev_hold_rate": None,
             "bundler_rate": None,
+            "deployer_holder_ratio": None,
+            "liquidity": None,
+            "contract_risk_flags": [],
+            "ownership_renounced": None,
+            "holders": 0,
+            "holders_growth_24h": None,
+            "buyers_24h": 0,
+            "sellers_24h": 0,
         }
