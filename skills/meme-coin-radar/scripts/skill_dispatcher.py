@@ -28,6 +28,12 @@ from providers.gmgn import (
     trending as gmgn_trending_provider,
 )
 from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
+from providers.onchainos import (
+    hot_tokens as onchainos_hot_tokens_provider,
+    signal_list as onchainos_signal_list_provider,
+    token_snapshot as onchainos_token_snapshot_provider,
+    tracker_activities as onchainos_tracker_activities_provider,
+)
 from providers.okx import account_equity as okx_account_equity_impl
 
 BATCH_WORKERS = 12
@@ -166,6 +172,40 @@ def gmgn_trenches(chain: str = "sol", token_type: str = "new_creation", limit: i
     return gmgn_trenches_provider(chain=chain, token_type=token_type, limit=limit)
 
 
+def okx_hot_tokens(ranking_type: int = 4, chain: str | None = None, limit: int = 20, time_frame: int = 4) -> list:
+    items, _status = onchainos_hot_tokens_provider(
+        ranking_type=ranking_type,
+        chain=chain,
+        limit=limit,
+        time_frame=time_frame,
+    )
+    return items
+
+
+def okx_signal_list(chain: str, wallet_type: str = "1,2,3", limit: int = 20) -> list:
+    items, _status = onchainos_signal_list_provider(chain=chain, wallet_type=wallet_type, limit=limit)
+    return items
+
+
+def okx_tracker_activities(
+    tracker_type: str = "smart_money",
+    chain: str | None = None,
+    trade_type: int = 1,
+    limit: int = 50,
+) -> list:
+    items, _status = onchainos_tracker_activities_provider(
+        tracker_type=tracker_type,
+        chain=chain,
+        trade_type=trade_type,
+        limit=limit,
+    )
+    return items
+
+
+def okx_token_snapshot(address: str, chain: str | None = None) -> dict[str, Any]:
+    return onchainos_token_snapshot_provider(address=address, chain=chain)
+
+
 def binance_smartmoney_signals(chain: str = "sol", page: int = 1, page_size: int = 50) -> list:
     chain_map = {"sol": "CT_501", "bsc": "56", "solana": "CT_501"}
     chain_id = chain_map.get(chain.lower(), "CT_501")
@@ -284,5 +324,9 @@ __all__ = [
     "okx_account_equity",
     "okx_btc_status",
     "okx_funding_rate",
+    "okx_hot_tokens",
+    "okx_signal_list",
     "okx_swap_tickers",
+    "okx_token_snapshot",
+    "okx_tracker_activities",
 ]

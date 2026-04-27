@@ -1,22 +1,15 @@
 """
-候选发现层 (Candidate Discovery Layer) — roadmap P0-3
-─────────────────────────────────────────────────────
-将候选来源统一为多层发现机制，不再只扫描固定池。
+候选发现层 (Candidate Discovery Layer)
+─────────────────────────────────────
+以 OKX OnchainOS 为主发现层，Binance Alpha 只做热度补强。
 
-候选来源:
-  - cex_anomaly:     OKX/Binance 涨跌幅异常标的
-  - alpha_hot:       Binance Alpha 高活跃标的
-  - gmgn_trending:   GMGN 热门代币（SOL/BSC）
-  - gmgn_signal:     GMGN 聪明钱信号
-  - gmgn_trenches:   GMGN Pump.fun 新币
-  - key_coins:       用户配置的固定观察池
-
-每个候选包含:
-  - symbol
-  - candidate_source (列表)
-  - tradable_on_cex: bool
-  - market_type: "cex_perp" | "onchain_spot" | "layer0_watch"
-  - metadata (原始数据)
+主入口:
+  - okx_hot:       OKX trending 热门榜
+  - okx_x:         OKX X mentions 热门榜
+  - okx_signal:    OKX 聚合买入信号
+  - okx_tracker:   OKX 聪明钱交易流
+  - alpha_hot:     Binance Alpha 热度补强
+  - key_coins:     固定观察池
 """
 from __future__ import annotations
 
@@ -29,13 +22,17 @@ class Candidate:
         symbol: str,
         candidate_sources: list[str],
         tradable_on_cex: bool = False,
-        market_type: str = "layer0_watch",
+        market_type: str = "onchain_spot",
+        token_address: str = "",
+        chain: str = "",
         metadata: dict[str, Any] | None = None,
     ):
         self.symbol = symbol.upper()
         self.candidate_sources = list(candidate_sources)
         self.tradable_on_cex = tradable_on_cex
-        self.market_type = market_type  # cex_perp / onchain_spot / layer0_watch
+        self.market_type = market_type
+        self.token_address = token_address
+        self.chain = chain
         self.metadata = metadata or {}
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,124 +41,203 @@ class Candidate:
             "candidate_sources": self.candidate_sources,
             "tradable_on_cex": self.tradable_on_cex,
             "market_type": self.market_type,
+            "token_address": self.token_address,
+            "chain": self.chain,
             "metadata": self.metadata,
         }
 
 
+def _norm_chain(chain: Any) -> str:
+    raw = str(chain or "").strip().lower()
+    chain_map = {
+        "501": "solana",
+        "1": "ethereum",
+        "56": "bsc",
+        "8453": "base",
+    }
+    return chain_map.get(raw, raw)
+
+
+def _hot_meta(item: dict[str, Any], okx_hot_rank: int | None = None, okx_x_rank: int | None = None) -> dict[str, Any]:
+    return {
+        "chain": _norm_chain(item.get("chain") or item.get("chainIndex")),
+        "address": str(item.get("token_address") or item.get("tokenContractAddress") or ""),
+        "okx_hot_rank": okx_hot_rank,
+        "okx_x_rank": okx_x_rank,
+        "onchain_data": {
+            "hot_token": item,
+        },
+    }
+
+
 def discover_candidates(
-    all_tickers: list[dict],
-    alpha_dict: dict,
-    gmgn_sol_trending: list[dict],
-    gmgn_bsc_trending: list[dict],
-    gmgn_signals: list[dict],
-    gmgn_trenches: list[dict],
-    key_coins: list[str],
-    top_anomaly_n: int = 20,
+    okx_hot_tokens: list[dict] | None = None,
+    okx_x_tokens: list[dict] | None = None,
+    okx_signals: list[dict] | None = None,
+    okx_tracker_activities: list[dict] | None = None,
+    alpha_dict: dict | None = None,
+    key_coins: list[str] | tuple[str, ...] = (),
+    all_tickers: list[dict] | None = None,
+    gmgn_sol_trending: list[dict] | None = None,
+    gmgn_bsc_trending: list[dict] | None = None,
+    gmgn_signals: list[dict] | None = None,
+    gmgn_trenches: list[dict] | None = None,
     top_alpha_n: int = 15,
 ) -> list[Candidate]:
-    """
-    Unified candidate discovery. Returns all candidates with source tags.
-    """
     candidates: dict[str, Candidate] = {}
+    alpha_dict = alpha_dict or {}
 
-    def _ensure(sym: str, source: str, tradable: bool = False, mtype: str = "layer0_watch", meta=None):
-        sym = sym.upper()
-        if sym not in candidates:
-            candidates[sym] = Candidate(
-                symbol=sym,
+    def _ensure(
+        sym: str,
+        source: str,
+        token_address: str = "",
+        chain: str = "",
+        tradable: bool = False,
+        mtype: str = "onchain_spot",
+        meta: dict[str, Any] | None = None,
+    ) -> Candidate:
+        symbol = sym.upper().strip()
+        if not symbol:
+            raise ValueError("symbol is required")
+        candidate = candidates.get(symbol)
+        if candidate is None:
+            candidate = Candidate(
+                symbol=symbol,
                 candidate_sources=[source],
                 tradable_on_cex=tradable,
                 market_type=mtype,
+                token_address=token_address,
+                chain=chain,
                 metadata=meta or {},
             )
+            candidates[symbol] = candidate
         else:
-            if source not in candidates[sym].candidate_sources:
-                candidates[sym].candidate_sources.append(source)
-            # Upgrade tradability if any source says it's tradable
+            if source not in candidate.candidate_sources:
+                candidate.candidate_sources.append(source)
             if tradable:
-                candidates[sym].tradable_on_cex = True
-                candidates[sym].market_type = mtype
+                candidate.tradable_on_cex = True
+                candidate.market_type = mtype
+            if token_address and not candidate.token_address:
+                candidate.token_address = token_address
+            if chain and not candidate.chain:
+                candidate.chain = chain
+            if meta:
+                existing = candidate.metadata.get("onchain_data", {})
+                incoming = meta.get("onchain_data", {})
+                candidate.metadata = {**candidate.metadata, **meta}
+                candidate.metadata["onchain_data"] = {**existing, **incoming}
+        return candidate
 
-    # 1. CEX anomaly (top gainers + top losers)
-    if all_tickers:
-        sorted_tickers = sorted(all_tickers, key=lambda x: x.get("chg24h_pct", 0), reverse=True)
-        for t in sorted_tickers[:top_anomaly_n]:
-            _ensure(t["symbol"], "cex_anomaly", tradable=True, mtype="cex_perp", meta={"chg24h_pct": t.get("chg24h_pct")})
-        for t in sorted_tickers[-top_anomaly_n:]:
-            _ensure(t["symbol"], "cex_anomaly", tradable=True, mtype="cex_perp", meta={"chg24h_pct": t.get("chg24h_pct")})
+    for index, item in enumerate(okx_hot_tokens or [], 1):
+        symbol = str(item.get("tokenSymbol") or item.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        meta = _hot_meta(item, okx_hot_rank=index)
+        _ensure(
+            symbol,
+            "okx_hot",
+            token_address=meta["address"],
+            chain=meta["chain"],
+            tradable=False,
+            mtype="onchain_spot",
+            meta=meta,
+        )
 
-    # 2. Alpha hot
+    for index, item in enumerate(okx_x_tokens or [], 1):
+        symbol = str(item.get("tokenSymbol") or item.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        meta = _hot_meta(item, okx_x_rank=index)
+        _ensure(
+            symbol,
+            "okx_x",
+            token_address=meta["address"],
+            chain=meta["chain"],
+            tradable=False,
+            mtype="onchain_spot",
+            meta=meta,
+        )
+
+    for item in okx_signals or []:
+        token = item.get("token", {}) if isinstance(item.get("token"), dict) else {}
+        symbol = str(token.get("symbol") or item.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        chain = _norm_chain(item.get("chain") or item.get("chainIndex"))
+        address = str(token.get("tokenAddress") or item.get("tokenAddress") or "")
+        _ensure(
+            symbol,
+            "okx_signal",
+            token_address=address,
+            chain=chain,
+            tradable=False,
+            mtype="onchain_spot",
+            meta={"chain": chain, "address": address, "onchain_data": {"signal": item}},
+        )
+
+    for item in okx_tracker_activities or []:
+        changed = item.get("changedTokenInfo", [])
+        token_info = changed[0] if isinstance(changed, list) and changed and isinstance(changed[0], dict) else {}
+        symbol = str(token_info.get("tokenSymbol") or item.get("tokenSymbol") or "").upper()
+        if not symbol:
+            continue
+        chain = _norm_chain(item.get("chain") or item.get("chainIndex"))
+        address = str(token_info.get("tokenAddress") or item.get("tokenAddress") or "")
+        _ensure(
+            symbol,
+            "okx_tracker",
+            token_address=address,
+            chain=chain,
+            tradable=False,
+            mtype="onchain_spot",
+            meta={"chain": chain, "address": address, "onchain_data": {"tracker": item}},
+        )
+
     top_alpha = sorted(alpha_dict.items(), key=lambda item: item[1].get("count24h", 0), reverse=True)[:top_alpha_n]
     for sym, data in top_alpha:
-        _ensure(sym, "alpha_hot", tradable=True, mtype="cex_perp", meta={"count24h": data.get("count24h"), "pct": data.get("pct")})
+        _ensure(
+            str(sym),
+            "alpha_hot",
+            tradable=True,
+            mtype="cex_perp",
+            meta={"binance_alpha_symbol": str(sym).upper(), "alpha_data": data},
+        )
 
-    # 3. Key coins (always included)
     for sym in key_coins:
-        _ensure(sym, "key_coins", tradable=True, mtype="cex_perp")
+        _ensure(str(sym), "key_coins", tradable=True, mtype="cex_perp")
 
-    # 4. GMGN trending (SOL + BSC) — onchain only, may map to CEX later
-    for token in gmgn_sol_trending + gmgn_bsc_trending:
-        sym = str(token.get("symbol", "")).upper()
-        if sym:
-            _ensure(sym, "gmgn_trending", tradable=False, mtype="onchain_spot", meta={
-                "chain": token.get("chain", "sol"),
-                "address": token.get("address", ""),
-                "price": token.get("price", 0),
-                "liquidity": token.get("liquidity", 0),
-            })
-
-    # 5. GMGN signals — smart money signals
-    for signal in gmgn_signals:
-        sym = str(signal.get("token_symbol", "")).upper()
-        if not sym:
-            # Try to extract from address if available
+    # Keep compatibility with older discovery sources if they are still supplied.
+    for legacy in (gmgn_sol_trending or []) + (gmgn_bsc_trending or []):
+        symbol = str(legacy.get("symbol") or "").upper()
+        if not symbol:
             continue
-        _ensure(sym, "gmgn_signal", tradable=False, mtype="onchain_spot", meta={
-            "signal_type": signal.get("signal_type"),
-            "trigger_mc": signal.get("trigger_mc"),
-        })
-
-    # 6. GMGN trenches — new tokens
-    for token in gmgn_trenches:
-        sym = str(token.get("symbol", "")).upper()
-        if sym:
-            _ensure(sym, "gmgn_trenches", tradable=False, mtype="layer0_watch", meta={
-                "chain": token.get("chain", "sol"),
-                "address": token.get("address", ""),
-            })
+        _ensure(
+            symbol,
+            "legacy_gmgn",
+            token_address=str(legacy.get("address") or ""),
+            chain=_norm_chain(legacy.get("chain")),
+            tradable=False,
+            mtype="onchain_spot",
+            meta={"chain": _norm_chain(legacy.get("chain")), "address": str(legacy.get("address") or ""), "gmgn_data": legacy},
+        )
 
     return list(candidates.values())
 
 
 def prioritize_candidates(candidates: list[Candidate], min_coverage: int = 2) -> list[Candidate]:
-    """
-    Prioritize candidates that appear in multiple sources (共振).
-    Returns candidates sorted by source coverage desc, then tradable first.
-    """
-    def _score(c: Candidate) -> tuple:
-        # Tradable CEX perp gets highest priority
-        # Then multi-source candidates
-        # Then single-source
+    def _score(c: Candidate) -> tuple[int, int, str]:
         return (
-            1 if c.tradable_on_cex else 0,
             len(c.candidate_sources),
+            1 if c.tradable_on_cex else 0,
             c.symbol,
         )
 
-    candidates.sort(key=_score, reverse=True)
-
-    # Separate multi-source from single-source for report clarity
-    multi = [c for c in candidates if len(c.candidate_sources) >= min_coverage]
-    single = [c for c in candidates if len(c.candidate_sources) < min_coverage]
-
-    return multi + single
+    return sorted(candidates, key=_score, reverse=True)
 
 
 def get_cex_symbols(candidates: list[Candidate]) -> list[str]:
-    """Extract only CEX-tradable symbols for batch data fetch."""
     return [c.symbol for c in candidates if c.tradable_on_cex]
 
 
 def get_onchain_symbols(candidates: list[Candidate]) -> list[str]:
-    """Extract onchain-only symbols for Layer 0 tracking."""
     return [c.symbol for c in candidates if not c.tradable_on_cex]

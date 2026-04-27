@@ -69,17 +69,15 @@ class RadarLogicTest(unittest.TestCase):
             gmgn_token=None,
             gmgn_security_score_fn=None,
         )
-        # With low chg/vol/funding it should be watchlist but not can_enter
-        self.assertIn(result["decision"], {"watchlist", "reject"})
+        # With low momentum it should not be paper-trade ready
+        self.assertIn(result["decision"], {"manual_review", "reject", "watch_only"})
         self.assertFalse(result["can_enter"])
         self.assertIn(result["direction"], {"long", "short"})
-        # Check new module keys exist
-        self.assertIn("safety_liquidity", result["module_scores"])
-        self.assertIn("price_volume", result["module_scores"])
-        self.assertIn("onchain_smart_money", result["module_scores"])
-        self.assertIn("social_narrative", result["module_scores"])
-        self.assertIn("market_regime", result["module_scores"])
-        # Check Obsidian JSON fields
+        self.assertIn("turnover_activity", result["module_scores"])
+        self.assertIn("momentum_window", result["module_scores"])
+        self.assertIn("execution_mapping", result["module_scores"])
+        self.assertIn("oos", result)
+        self.assertIn("ers", result)
         self.assertIn("hard_reject", result)
         self.assertIn("needs_manual_review", result)
         self.assertIn("risk_notes", result)
@@ -122,15 +120,44 @@ class RadarLogicTest(unittest.TestCase):
             gmgn_token=None,
             gmgn_security_score_fn=None,
             klines_4h=klines_4h,
+            mapping_confidence="high",
+            onchain_data={
+                "price_info": {
+                    "marketCap": "25000000",
+                    "volume24H": "30000000",
+                    "holders": "12000",
+                    "txs24H": "9000",
+                    "priceChange4H": "6",
+                    "maxPrice": "1.1",
+                    "minPrice": "0.7",
+                },
+                "advanced_info": {
+                    "top10HoldPercent": "18",
+                    "devHoldingPercent": "4",
+                    "suspiciousHoldingPercent": "2",
+                },
+                "cluster_overview": {
+                    "clusterConcentration": "Low",
+                    "rugPullPercent": "10",
+                    "holderNewAddressPercent": "18",
+                },
+                "signals": [
+                    {"triggerWalletCount": "4", "walletType": "1", "soldRatioPercent": "15"},
+                    {"triggerWalletCount": "4", "walletType": "2", "soldRatioPercent": "25"},
+                ],
+                "tracker_items": [{"userAddress": "0x1"}, {"userAddress": "0x2"}],
+                "okx_x_rank": 4,
+                "hot_token": {"txsBuy": "5000", "txsSell": "2500"},
+            },
         )
-        self.assertGreaterEqual(result["total"], 50)
-        # Check module breakdown
-        self.assertGreaterEqual(result["module_scores"]["price_volume"], 10)
-        self.assertGreaterEqual(result["module_scores"]["social_narrative"], 6)
+        self.assertEqual(result["decision"], "recommend_paper_trade")
+        self.assertGreaterEqual(result["oos"], 70)
+        self.assertGreaterEqual(result["ers"], 65)
+        self.assertGreaterEqual(result["module_scores"]["momentum_window"], 10)
+        self.assertGreaterEqual(result["module_scores"]["social_heat"], 3)
 
     def test_oi_quadrant_scoring(self) -> None:
         settings = Settings()
-        # OI up + price up => +4
         result = score_candidate(
             symbol="BTC",
             ticker={"price": 100.0, "chg24h": 5.0, "volume": 200_000_000, "source": "test"},
@@ -144,8 +171,7 @@ class RadarLogicTest(unittest.TestCase):
             gmgn_security_score_fn=None,
             oi={"oi": 1000, "oi_change_pct": 5.0, "price_change_pct": 5.0},
         )
-        # onchain_smart_money should benefit from OI↑+Price↑
-        self.assertGreaterEqual(result["module_scores"]["onchain_smart_money"], 2)
+        self.assertIn("oi", result["meta"])
 
     def test_missing_fields_downgrade(self) -> None:
         settings = Settings()
@@ -161,9 +187,79 @@ class RadarLogicTest(unittest.TestCase):
             gmgn_token=None,
             gmgn_security_score_fn=None,
         )
-        # 5 core fields missing → should be capped at 74
-        self.assertLessEqual(result["total"], 74)
+        self.assertIn(result["decision"], {"manual_review", "reject", "watch_only"})
         self.assertTrue(result["needs_manual_review"])
+
+    def test_overextended_momentum_scores_lower_than_healthy_window(self) -> None:
+        settings = Settings()
+        healthy = score_candidate(
+            symbol="EARLY",
+            ticker={"price": 1.0, "chg24h": 10.0, "volume": 80_000_000, "source": "test"},
+            funding={"fundingRate_pct": 0.2, "source": "test"},
+            alpha={"count24h": 60000, "pct": 8.0},
+            klines=[(1, 1.1, 0.95, 1.02, 1)] * 50,
+            btc_dir="up",
+            missing_fields=[],
+            settings=settings,
+        )
+        late = score_candidate(
+            symbol="LATE",
+            ticker={"price": 1.0, "chg24h": 70.0, "volume": 80_000_000, "source": "test"},
+            funding={"fundingRate_pct": 0.2, "source": "test"},
+            alpha={"count24h": 60000, "pct": 40.0},
+            klines=[(1, 1.3, 0.95, 1.25, 1)] * 50,
+            btc_dir="up",
+            missing_fields=[],
+            settings=settings,
+        )
+        self.assertGreater(healthy["module_scores"]["momentum_window"], late["module_scores"]["momentum_window"])
+
+    def test_high_turnover_but_bad_cluster_is_rejected(self) -> None:
+        settings = Settings()
+        result = score_candidate(
+            symbol="RISKY",
+            ticker={"price": 1.0, "chg24h": 12.0, "volume": 90_000_000, "source": "test"},
+            funding={"fundingRate_pct": 0.1, "source": "test"},
+            alpha={"count24h": 20000, "pct": 5.0},
+            klines=[(1, 1.1, 0.95, 1.02, 1)] * 50,
+            btc_dir="up",
+            missing_fields=[],
+            settings=settings,
+            mapping_confidence="high",
+            onchain_data={
+                "price_info": {"marketCap": "40000000", "volume24H": "80000000", "holders": "3000", "txs24H": "6000"},
+                "advanced_info": {"top10HoldPercent": "20", "suspiciousHoldingPercent": "5"},
+                "cluster_overview": {"clusterConcentration": "High", "rugPullPercent": "80", "holderNewAddressPercent": "20"},
+                "hot_token": {"txsBuy": "4000", "txsSell": "1000"},
+            },
+        )
+        self.assertEqual(result["decision"], "reject")
+
+    def test_strong_onchain_without_mapping_becomes_watch_only(self) -> None:
+        settings = Settings()
+        result = score_candidate(
+            symbol="WATCH",
+            ticker={"price": 1.0, "chg24h": 10.0, "volume": 50_000_000, "source": "test"},
+            funding={"fundingRate_pct": 0.2, "source": "test"},
+            alpha={"count24h": 80000, "pct": 10.0},
+            klines=[(1, 1.1, 0.95, 1.03, 1)] * 50,
+            btc_dir="up",
+            missing_fields=[],
+            settings=settings,
+            tradable=False,
+            mapping_confidence="none",
+            onchain_data={
+                "price_info": {"marketCap": "30000000", "volume24H": "60000000", "holders": "8000", "txs24H": "5000", "maxPrice": "1.1", "minPrice": "0.85"},
+                "advanced_info": {"top10HoldPercent": "18", "devHoldingPercent": "3", "suspiciousHoldingPercent": "2"},
+                "cluster_overview": {"clusterConcentration": "Low", "rugPullPercent": "10", "holderNewAddressPercent": "16"},
+                "signals": [{"triggerWalletCount": "4", "walletType": "1", "soldRatioPercent": "20"}],
+                "tracker_items": [{"userAddress": "0x1"}, {"userAddress": "0x2"}],
+                "okx_x_rank": 6,
+                "hot_token": {"txsBuy": "3000", "txsSell": "1500"},
+            },
+        )
+        self.assertEqual(result["decision"], "watch_only")
+        self.assertFalse(result["can_enter"])
 
 
 if __name__ == "__main__":

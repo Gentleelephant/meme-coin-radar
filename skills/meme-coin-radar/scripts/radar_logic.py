@@ -4,8 +4,46 @@ from typing import Any
 
 try:
     from .config import Settings
+    from .scoring_modules import (
+        direction_signal,
+        normalize_ratio,
+        safe_div,
+        score_data_quality,
+        score_execution_alpha,
+        score_execution_liquidity,
+        score_execution_mapping,
+        score_execution_timing,
+        score_holder_structure,
+        score_intraday_position,
+        score_market_regime,
+        score_market_cap_fit,
+        score_momentum_window,
+        score_smart_money_resonance,
+        score_social_heat,
+        score_turnover_activity,
+        to_float,
+    )
 except ImportError:
     from config import Settings
+    from scoring_modules import (
+        direction_signal,
+        normalize_ratio,
+        safe_div,
+        score_data_quality,
+        score_execution_alpha,
+        score_execution_liquidity,
+        score_execution_mapping,
+        score_execution_timing,
+        score_holder_structure,
+        score_intraday_position,
+        score_market_regime,
+        score_market_cap_fit,
+        score_momentum_window,
+        score_smart_money_resonance,
+        score_social_heat,
+        score_turnover_activity,
+        to_float,
+    )
 
 
 # ────────────────────────────────────────────────
@@ -221,336 +259,6 @@ def _hard_reject_check(
 
 
 # ────────────────────────────────────────────────
-# 5-Module scoring (Obsidian 25/30/20/15/10)
-# ────────────────────────────────────────────────
-def _score_safety_liquidity(
-    ticker: dict | None,
-    funding: dict | None,
-    gmgn_sec: dict | None,
-) -> int:
-    m = 0
-    vol = float(ticker.get("volume") or 0) if ticker else 0.0
-
-    # Volume tier (max 8)
-    if vol >= 500e6:
-        m += 8
-    elif vol >= 100e6:
-        m += 5
-    elif vol >= 20e6:
-        m += 3
-    elif vol >= 5e6:
-        m += 1
-
-    # Exchange listing / funding availability (max 5)
-    if funding:
-        m += 5
-    elif ticker:
-        m += 2
-
-    # GMGN on-chain security bonus (max 12, capped by module limit)
-    if gmgn_sec and not gmgn_sec.get("reject"):
-        tag = gmgn_sec.get("tag", "")
-        if "🟢" in tag:
-            m += 5
-        elif "🟡" in tag:
-            m += 2
-
-        rug = gmgn_sec.get("rug_ratio", 1)
-        if rug is not None:
-            if rug < 0.1:
-                m += 4
-            elif rug < 0.2:
-                m += 2
-
-        top10 = gmgn_sec.get("top_10_holder_rate", 1)
-        if top10 is not None:
-            if top10 < 0.20:
-                m += 4
-            elif top10 < 0.35:
-                m += 2
-
-        if gmgn_sec.get("dev_hold_rate", 1) is not None and gmgn_sec.get("dev_hold_rate", 1) < 0.10:
-            m += 2
-
-    return min(m, 25)
-
-
-def _score_price_volume_trend(
-    ticker: dict | None,
-    k1h: dict[str, Any],
-    k4h: dict[str, Any] | None,
-    chg4h: float | None = None,
-    volume_vs_7d: float | None = None,
-    risk_notes: list[str] | None = None,
-) -> int:
-    m = 0
-    atr_pct = k1h.get("atr_pct")
-    trend_1h = k1h.get("trend")
-    vol = float(ticker.get("volume") or 0) if ticker else 0.0
-    chg = float(ticker.get("chg24h") or 0) if ticker else 0.0
-    abs_chg = abs(chg)
-    rn = risk_notes if risk_notes is not None else []
-
-    # Volatility / ATR (max 6)
-    if atr_pct is not None:
-        if atr_pct >= 0.08:
-            m += 6
-        elif atr_pct >= 0.05:
-            m += 3
-
-    # Volume expansion vs 7d avg (max 10) – preferred metric
-    if volume_vs_7d is not None:
-        if volume_vs_7d >= 5:
-            m += 10
-        elif volume_vs_7d >= 3:
-            m += 6
-        elif volume_vs_7d >= 2:
-            m += 3
-    else:
-        # Fallback to absolute volume tiers when 7d avg unavailable
-        if vol >= 500e6:
-            m += 8
-        elif vol >= 200e6:
-            m += 5
-        elif vol >= 100e6:
-            m += 3
-        elif vol >= 50e6:
-            m += 1
-
-    # Price strength: combines 24h + 4h momentum (max 6)
-    if chg >= 50 and chg4h is not None and chg4h >= 12:
-        m += 6
-    elif chg >= 25 and chg4h is not None and chg4h >= 5:
-        m += 4
-    elif abs_chg >= 5:
-        m += 2
-
-    # Trend structure (max 6) – bearish gets 0 per Obsidian spec
-    if trend_1h == "bullish":
-        m += 6
-    elif trend_1h == "weak_recovery":
-        m += 2
-    elif trend_1h in ("caution", "below_ema20"):
-        m += 1
-    elif trend_1h == "bearish":
-        rn.append("逆趋势异动: price_below_ema20_below_ema50")
-
-    # 4H dual timeframe alignment bonus (max 4)
-    if k4h:
-        trend_4h = k4h.get("trend")
-        if trend_4h and trend_1h and trend_4h == trend_1h:
-            m += 4
-
-    # Buy pressure confirmation (max 3)
-    if chg > 3 and vol >= 50e6:
-        m += 3
-
-    return min(m, 30)
-
-
-def _score_onchain_smart_money(
-    funding: dict | None,
-    gmgn_sec: dict | None,
-    oi_data: dict | None,
-    holder_growth: float | None,
-) -> int:
-    m = 0
-
-    # 1. Smart money inflow (max 8)
-    sm_count = int(gmgn_sec.get("smart_degen_count", 0)) if gmgn_sec else 0
-    if sm_count >= 5:
-        m += 8
-    elif sm_count >= 3:
-        m += 5
-    elif sm_count >= 1:
-        m += 2
-
-    # 2. Holder growth (max 6)
-    if holder_growth is not None:
-        if holder_growth >= 0.25:
-            m += 6
-        elif holder_growth >= 0.10:
-            m += 3
-        elif holder_growth >= 0:
-            m += 1
-    else:
-        # Weak fallback using absolute holder count
-        holders = int(gmgn_sec.get("holders", 0)) if gmgn_sec else 0
-        if holders >= 5000:
-            m += 1
-
-    # 3. OI quadrant (max 4, can be negative)
-    if oi_data:
-        oi_chg = oi_data.get("oi_change_pct", 0)
-        price_chg = oi_data.get("price_change_pct", 0)
-        oi_up = oi_chg > 0
-        price_up = price_chg > 0
-        if oi_up and price_up:
-            m += 4
-        elif oi_up and not price_up:
-            m -= 2
-        elif not oi_up and price_up:
-            m += 2
-        elif not oi_up and not price_up:
-            m -= 4
-
-    # 4. Funding rate (max 2)
-    fr = funding.get("fundingRate_pct", 0.0) if funding else 0.0
-    if fr > 0:
-        if fr >= 2.0:
-            m += 2
-        elif fr >= 0.5:
-            m += 1
-    elif fr < 0:
-        if fr <= -0.5:
-            m += 2
-        elif fr <= -0.2:
-            m += 1
-
-    # 5. Buyer/seller dominance (max 2)
-    if gmgn_sec:
-        buyers = int(gmgn_sec.get("buyers_24h", 0))
-        sellers = int(gmgn_sec.get("sellers_24h", 0))
-        if sellers > 0 and buyers / sellers >= 1.2:
-            m += 2
-        elif buyers > sellers:
-            m += 1
-
-    return max(min(m, 20), 0)
-
-
-def _score_social_narrative(alpha: dict | None, chg: float) -> int:
-    m = 0
-    count24h = alpha.get("count24h", 0) if alpha else 0
-    abs_chg = abs(chg)
-
-    if count24h >= 100000:
-        m += 6
-        if abs_chg >= 5:
-            m += 2
-    elif count24h >= 50000:
-        m += 4
-        if abs_chg >= 3:
-            m += 2
-    elif count24h >= 20000:
-        m += 2
-    elif count24h > 0:
-        m += 1
-
-    # Reserved for Phase 3: social_mentions, kol_count, narrative_tags (max 5)
-    # if social_mentions_4h_vs_7d_avg >= 2: m += 3
-    # if kol_unique_count_24h >= 3: m += 2
-
-    return min(m, 15)
-
-
-def _score_market_regime(btc_dir: str, alt_rotation: bool = False) -> int:
-    if alt_rotation:
-        return 10
-    return 7 if btc_dir == "up" else (0 if btc_dir == "down" else 3)
-
-
-# ────────────────────────────────────────────────
-# Direction signal (long/short bias)
-# ────────────────────────────────────────────────
-def _direction_signal(
-    chg: float,
-    fr: float,
-    trend_struct: str | None,
-    count24h: int,
-    sm_count: int,
-    total: float,
-    trend_4h: str | None,
-    settings: Settings,
-) -> tuple[bool, str, float, list[str]]:
-    long_bias = 0.0
-    short_bias = 0.0
-    reasons: list[str] = []
-
-    # Price momentum
-    if chg >= 5:
-        long_bias += 16.0
-        reasons.append("24h趋势偏多")
-    elif chg <= -5:
-        short_bias += 16.0
-        reasons.append("24h趋势偏空")
-
-    # Funding rate
-    if fr < -0.2:
-        long_bias += 14.0
-        reasons.append("负费率支持做多")
-    elif fr > 0.5:
-        short_bias += 14.0
-        reasons.append("正费率支持做空")
-    elif fr > 0:
-        short_bias += 5.0
-    elif fr < 0:
-        long_bias += 5.0
-
-    # Trend structure (1H)
-    if trend_struct == "bullish":
-        long_bias += 14.0
-        reasons.append("EMA多头排列")
-    elif trend_struct == "bearish":
-        short_bias += 14.0
-        reasons.append("EMA空头排列")
-    elif trend_struct == "weak_recovery":
-        long_bias += 8.0
-        reasons.append("弱修复结构")
-    elif trend_struct == "below_ema20":
-        short_bias += 8.0
-
-    # Dual timeframe check
-    if trend_4h:
-        if trend_4h == "bullish":
-            long_bias += 6.0
-            reasons.append("4H趋势偏多")
-        elif trend_4h == "bearish":
-            short_bias += 6.0
-            reasons.append("4H趋势偏空")
-        if trend_struct and ((trend_4h == "bullish" and trend_struct not in ("bullish", "weak_recovery"))
-                            or (trend_4h == "bearish" and trend_struct not in ("bearish",))):
-            # Mild contradiction: reduce the weaker side
-            pass
-
-    # Social activity
-    if count24h >= 100000:
-        if chg >= 0:
-            long_bias += 6.0
-        else:
-            short_bias += 6.0
-        reasons.append("社区活跃度很高")
-    elif count24h >= 50000:
-        if abs(chg) >= 5:
-            reasons.append("社区活跃度确认异动")
-        if chg >= 0:
-            long_bias += 4.0
-        else:
-            short_bias += 4.0
-
-    # Smart money
-    if sm_count >= 3:
-        long_bias += 6.0
-        reasons.append("链上聪明钱参与")
-    elif sm_count >= 1:
-        long_bias += 3.0
-
-    dominant = "long" if long_bias > short_bias else "short"
-    dominant_score = max(long_bias, short_bias)
-    bias_gap = abs(long_bias - short_bias)
-    confidence = min(100.0, total * 0.65 + dominant_score * 0.35)
-
-    can_enter = (
-        total >= settings.min_recommend_score
-        and dominant_score >= settings.min_direction_bias
-        and bias_gap >= settings.min_direction_gap
-    )
-    if not can_enter:
-        return False, dominant, round(confidence, 2), reasons or ["方向优势不足"]
-    return True, dominant, round(confidence, 2), reasons
-
-
-# ────────────────────────────────────────────────
 # Trade plan builder (with Obsidian R:R + sizing)
 # ────────────────────────────────────────────────
 def build_trade_plan(
@@ -600,7 +308,7 @@ def build_trade_plan(
     position_size_usd: float | None = None
     position_text = result.get("position_size", "不建议开仓")
     if equity > 0 and risk_distance > 0:
-        total_score = result.get("total", 0)
+        total_score = result.get("final_score", result.get("total", 0))
         risk_ratio = 0.03 if total_score >= 85 else (0.02 if total_score >= 75 else 0.01)
         stop_pct = risk_distance / mid_entry if mid_entry > 0 else risk_pct
         position_size_usd = equity * risk_ratio / stop_pct
@@ -636,7 +344,6 @@ def build_trade_plan(
         "quality_flags": quality_flags,
     }
 
-
 # ────────────────────────────────────────────────
 # Main scoring entry-point (Obsidian aligned)
 # ────────────────────────────────────────────────
@@ -660,44 +367,153 @@ def score_candidate(
     tradable: bool = True,
     market_type: str = "cex_perp",
     mapping_confidence: str = "native",
+    onchain_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ticker = ticker or {}
     funding = funding or {}
     alpha = alpha or {}
-    mf = list(missing_fields)  # copy
+    onchain_data = onchain_data or {}
+    mf = list(missing_fields)
 
     chg = float(ticker.get("chg24h", 0.0))
     price = float(ticker.get("price", 0.0))
     vol = float(ticker.get("volume", 0.0))
     fr = float(funding.get("fundingRate_pct", 0.0)) if funding else 0.0
     count24h = alpha.get("count24h", 0) if alpha else 0
+    alpha_pct = float(alpha.get("pct", 0.0) or 0.0) if alpha else 0.0
 
-    # K-line metadata (1H)
     k1h = _klines_meta(klines, price)
     if k1h["atr_pct"] is None:
         mf.append("atr14")
     if k1h["trend"] is None:
         mf.append("trend")
 
-    # K-line metadata (4H)
     k4h = _klines_meta(klines_4h, price) if klines_4h else None
     if klines_4h and k4h and k4h["trend"] is None:
         mf.append("trend_4h")
 
-    # GMGN security
     gmgn_sec: dict[str, Any] | None = None
     if gmgn_token and gmgn_security_score_fn:
         gmgn_sec = gmgn_security_score_fn(gmgn_token)
     if gmgn_token and not gmgn_sec:
         mf.append("gmgn_security")
 
-    # ATR vs 30d average (placeholder until Phase 3 historical DB)
-    atr_vs_30d = None
+    price_info = onchain_data.get("price_info", {})
+    advanced_info = onchain_data.get("advanced_info", {})
+    cluster_overview = onchain_data.get("cluster_overview", {})
+    cluster_top_holders = onchain_data.get("cluster_top_holders", {})
+    hot_token = onchain_data.get("hot_token", {})
+    x_hot_token = onchain_data.get("x_hot_token", {})
+    holders_list = onchain_data.get("holders", []) or []
+    trades_list = onchain_data.get("trades", []) or []
+    signal_items = onchain_data.get("signals", []) or []
+    tracker_items = onchain_data.get("tracker_items", []) or []
 
-    # Hard rejects
-    reject, reject_reasons, risk_notes = _hard_reject_check(
-        symbol, ticker, gmgn_token, gmgn_sec, k1h.get("atr_pct"), atr_vs_30d
+    market_cap = max(
+        to_float(price_info.get("marketCap")),
+        to_float(hot_token.get("marketCap")),
+        to_float(x_hot_token.get("marketCap")),
     )
+    onchain_volume_24h = max(
+        to_float(price_info.get("volume24H")),
+        to_float(hot_token.get("volume")),
+    )
+    holder_count = max(
+        int(to_float(price_info.get("holders"))),
+        int(to_float(hot_token.get("holders"))),
+    )
+    txs_24h = max(
+        int(to_float(price_info.get("txs24H"))),
+        int(to_float(hot_token.get("txs"))),
+        len(trades_list),
+    )
+    buyers_24h = max(
+        int(to_float(hot_token.get("txsBuy"))),
+        int(to_float(gmgn_sec.get("buyers_24h") if gmgn_sec else 0)),
+    )
+    sellers_24h = max(
+        int(to_float(hot_token.get("txsSell"))),
+        int(to_float(gmgn_sec.get("sellers_24h") if gmgn_sec else 0)),
+    )
+    turnover_ratio = safe_div(onchain_volume_24h, market_cap)
+    trade_density = safe_div(float(txs_24h), float(max(holder_count, 1)))
+    buyer_ratio = safe_div(float(buyers_24h), float(max(sellers_24h, 1)))
+    chg4h = to_float(price_info.get("priceChange4H"), default=None) if price_info else None
+    if chg4h is None and klines_4h and len(klines_4h) >= 2:
+        try:
+            prev_close = float(klines_4h[-2][3])
+            last_close = float(klines_4h[-1][3])
+            chg4h = (last_close - prev_close) / prev_close * 100 if prev_close > 0 else None
+        except (IndexError, ValueError, TypeError):
+            chg4h = None
+
+    intraday_high = max(to_float(price_info.get("maxPrice")), to_float(ticker.get("high24h")))
+    intraday_low = max(to_float(price_info.get("minPrice")), 0.0)
+    day_pos = safe_div(price - intraday_low, max(intraday_high - intraday_low, 0.0)) if intraday_high > intraday_low and price > 0 else None
+
+    top10_ratio = normalize_ratio(advanced_info.get("top10HoldPercent"))
+    if top10_ratio is None:
+        top10_ratio = normalize_ratio(hot_token.get("top10HoldPercent"))
+    if top10_ratio is None and gmgn_sec:
+        top10_ratio = gmgn_sec.get("top_10_holder_rate")
+    new_wallet_ratio = normalize_ratio(cluster_overview.get("holderNewAddressPercent"))
+    cluster_rug_ratio = normalize_ratio(cluster_overview.get("rugPullPercent"))
+    cluster_concentration = str(cluster_overview.get("clusterConcentration") or "")
+    smart_money_holder_ratio = normalize_ratio(onchain_data.get("smart_money_holder_percent"))
+    whale_holder_ratio = normalize_ratio(onchain_data.get("whale_holder_percent"))
+    okx_x_rank = onchain_data.get("okx_x_rank")
+
+    signal_wallet_count = 0
+    wallet_types: set[str] = set()
+    repeat_signal_count = 0
+    tracked_wallets: set[str] = set()
+    for item in signal_items:
+        signal_wallet_count = max(signal_wallet_count, int(to_float(item.get("triggerWalletCount"))))
+        wallet_type = str(item.get("walletType") or "")
+        if wallet_type:
+            wallet_types.add(wallet_type)
+        sold_ratio = normalize_ratio(item.get("soldRatioPercent"))
+        if sold_ratio is not None and sold_ratio < 0.50:
+            repeat_signal_count += 1
+    for item in tracker_items:
+        addr = str(item.get("userAddress") or item.get("walletAddress") or "")
+        if addr:
+            tracked_wallets.add(addr)
+    tracked_wallet_overlap = len(tracked_wallets)
+    owned_smart_money_hit_count = 0
+
+    reject = False
+    reject_reasons: list[str] = []
+    risk_notes: list[str] = []
+    if top10_ratio is not None and top10_ratio > 0.35:
+        reject = True
+        reject_reasons.append(f"前十持仓={top10_ratio:.1%}>35%")
+    if cluster_rug_ratio is not None and cluster_rug_ratio >= 0.60:
+        reject = True
+        reject_reasons.append(f"cluster_rug_risk={cluster_rug_ratio:.0%}过高")
+    liquidity = max(to_float(price_info.get("liquidity")), to_float(gmgn_token.get("liquidity") if gmgn_token else 0))
+    if 0 < liquidity < 50000:
+        reject = True
+        reject_reasons.append(f"流动性=${liquidity:.0f}<$50K")
+    suspicious_ratio = normalize_ratio(advanced_info.get("suspiciousHoldingPercent"))
+    if suspicious_ratio is not None and suspicious_ratio >= 0.20:
+        reject = True
+        reject_reasons.append(f"可疑持仓占比={suspicious_ratio:.0%}过高")
+    dev_ratio = normalize_ratio(advanced_info.get("devHoldingPercent"))
+    if dev_ratio is not None and dev_ratio >= 0.15:
+        reject = True
+        reject_reasons.append(f"开发者持仓={dev_ratio:.0%}过高")
+    if gmgn_token:
+        deployer_ratio = to_float(gmgn_token.get("deployer_holder_ratio"), default=0.0)
+        if deployer_ratio > 0.10:
+            reject = True
+            reject_reasons.append(f"部署者持仓={deployer_ratio:.1%}>10%")
+    if mapping_confidence == "low" and tradable:
+        reject = True
+        reject_reasons.append("Binance映射置信度过低")
+    if chg > 60 and day_pos is not None and day_pos > 0.95 and (k4h and k4h.get("trend") not in {"bullish", "weak_recovery"}):
+        reject = True
+        reject_reasons.append("已暴涨且结构衰竭")
 
     if reject:
         return {
@@ -705,6 +521,9 @@ def score_candidate(
             "decision": "reject",
             "total": 0,
             "total_score": 0,
+            "final_score": 0,
+            "oos": 0,
+            "ers": 0,
             "direction": "none",
             "can_enter": False,
             "confidence": 0.0,
@@ -712,17 +531,23 @@ def score_candidate(
             "grade_label": "❌拒绝",
             "position_size": "不交易",
             "module_scores": {
+                "turnover_activity": 0,
+                "momentum_window": 0,
+                "holder_structure": 0,
+                "smart_money_resonance": 0,
+                "market_cap_fit": 0,
+                "intraday_position": 0,
+                "social_heat": 0,
+                "execution_mapping": 0,
+                "execution_alpha": 0,
+                "execution_liquidity": 0,
+                "execution_timing": 0,
+                "data_quality": 0,
                 "safety_liquidity": 0,
                 "price_volume": 0,
                 "onchain_smart_money": 0,
                 "social_narrative": 0,
                 "market_regime": 0,
-                "m1_safety": 0,
-                "m2": 0,
-                "m3": 0,
-                "m4": 0,
-                "m5": 0,
-                "m6": 0,
             },
             "hard_reject": True,
             "reject_reasons": reject_reasons,
@@ -736,25 +561,15 @@ def score_candidate(
                 "vol": vol,
                 "atr_pct": k1h.get("atr_pct"),
                 "trend": k1h.get("trend"),
+                "day_pos": day_pos,
+                "market_cap": market_cap,
                 "gmgn": gmgn_sec or {},
             },
         }
 
-    # Compute chg4h from last two 4H closes if available
-    chg4h = None
-    if klines_4h and len(klines_4h) >= 2:
-        try:
-            prev_close = float(klines_4h[-2][3])
-            last_close = float(klines_4h[-1][3])
-            if prev_close > 0:
-                chg4h = (last_close - prev_close) / prev_close * 100
-        except (IndexError, ValueError, TypeError):
-            pass
-
-    # Compute volume_vs_7d from 1d klines if available
     if volume_vs_7d is None and klines_1d and len(klines_1d) >= 8:
         try:
-            vols = [float(k[5]) for k in klines_1d[-8:]]  # last 8 days
+            vols = [float(k[5]) for k in klines_1d[-8:]]
             if len(vols) >= 8 and vols[-1] > 0:
                 avg_7d = sum(vols[:-1]) / 7
                 if avg_7d > 0:
@@ -762,137 +577,127 @@ def score_candidate(
         except (IndexError, ValueError, TypeError):
             pass
 
-    # Module scoring
-    m1 = _score_safety_liquidity(ticker, funding, gmgn_sec)
-    m2 = _score_price_volume_trend(ticker, k1h, k4h, chg4h=chg4h, volume_vs_7d=volume_vs_7d, risk_notes=risk_notes)
-
-    # Holder growth (from GMGN if available)
-    holder_growth = None
-    if gmgn_sec:
-        holder_growth = gmgn_sec.get("holders_growth_24h")
-    if holder_growth is None and gmgn_token:
-        holder_growth = float(gmgn_token.get("holders_growth_24h") or 0) or None
-
-    # OI data enrichment
     oi_data: dict[str, Any] | None = None
     if oi:
-        oi_data = {
-            "oi": oi.get("oi"),
-            "oi_change_pct": oi.get("oi_change_pct", 0),
-            "price_change_pct": chg,
-        }
-    else:
-        mf.append("oi")
+        oi_data = {"oi": oi.get("oi"), "oi_change_pct": oi.get("oi_change_pct", 0), "price_change_pct": chg}
 
-    m3 = _score_onchain_smart_money(funding, gmgn_sec, oi_data, holder_growth)
-    m4 = _score_social_narrative(alpha, chg)
-    m5 = _score_market_regime(btc_dir, alt_rotation=alt_rotation)
+    turnover_activity = score_turnover_activity(turnover_ratio, trade_density, buyer_ratio)
+    momentum_window = score_momentum_window(chg, chg4h, k1h.get("trend"), k4h.get("trend") if k4h else None)
+    holder_structure = score_holder_structure(
+        top10_ratio,
+        new_wallet_ratio,
+        cluster_concentration,
+        cluster_rug_ratio,
+        smart_money_holder_ratio,
+        whale_holder_ratio,
+    )
+    smart_money_resonance = score_smart_money_resonance(
+        signal_wallet_count=signal_wallet_count,
+        wallet_type_mix=len(wallet_types),
+        repeat_signal_count=repeat_signal_count,
+        tracked_wallet_overlap=tracked_wallet_overlap,
+        owned_smart_money_hit_count=owned_smart_money_hit_count,
+    )
+    market_cap_fit = score_market_cap_fit(market_cap)
+    intraday_position = score_intraday_position(day_pos)
+    social_heat = score_social_heat(okx_x_rank, count24h)
+    oos = turnover_activity + momentum_window + holder_structure + smart_money_resonance + market_cap_fit + intraday_position + social_heat
 
-    total = m1 + m2 + m3 + m4 + m5
+    execution_mapping = score_execution_mapping(mapping_confidence, tradable)
+    execution_alpha = score_execution_alpha(count24h, alpha_pct)
+    execution_liquidity = score_execution_liquidity(k1h.get("atr_pct"), vol, chg)
+    execution_timing = score_execution_timing(day_pos, chg)
 
-    # Obsidian decision tiers
-    if total >= 75:
-        decision = "monster_candidate"
-    elif total >= 50:
-        decision = "watchlist"
-    else:
-        decision = "reject"
+    missing_reasons = _classify_missing(ticker, funding, alpha, klines, klines_4h, oi, tradable=tradable)
+    if market_cap <= 0:
+        missing_reasons["marketCap"] = "fetch_error"
+        mf.append("marketCap")
+    if onchain_volume_24h <= 0:
+        missing_reasons["volume24H"] = "fetch_error"
+        mf.append("volume24H")
+    if top10_ratio is None:
+        missing_reasons["top10_holder_ratio"] = "fetch_error"
+        mf.append("top10_holder_ratio")
+    data_quality = score_data_quality(len(set(mf)), mapping_confidence)
+    ers = execution_mapping + execution_alpha + execution_liquidity + execution_timing + data_quality
 
-    # Direction signal
-    sm_count = int(gmgn_sec.get("smart_degen_count", 0)) if gmgn_sec else 0
-    can_enter, direction, confidence, entry_reasons = _direction_signal(
-        chg, fr, k1h.get("trend"), count24h, sm_count, total,
-        k4h.get("trend") if k4h else None, settings,
+    final_score = round(oos * 0.7 + ers * 0.3)
+
+    sm_count = max(signal_wallet_count, int(gmgn_sec.get("smart_degen_count", 0)) if gmgn_sec else 0)
+    can_enter, direction, confidence, entry_reasons = direction_signal(
+        chg,
+        fr,
+        k1h.get("trend"),
+        count24h,
+        sm_count,
+        final_score,
+        k4h.get("trend") if k4h else None,
+        settings.min_recommend_score,
+        settings.min_direction_bias,
+        settings.min_direction_gap,
     )
 
-    # Downgrade decision if below 75 (Obsidian: only monster_candidate can enter)
-    if total < 75:
+    if oos >= 70 and ers >= 65 and tradable:
+        decision = "recommend_paper_trade"
+    elif oos >= 70:
+        decision = "watch_only"
+    elif oos >= 55 or len(set(mf)) >= 3:
+        decision = "manual_review"
+    else:
+        decision = "reject"
+    if decision != "recommend_paper_trade":
         can_enter = False
-
-    # P0-4: Tradability enforcement
     if not tradable:
-        can_enter = False
         risk_notes.append(f"不可交易标的({market_type})，仅观察")
 
-    # Grade & position sizing text (legacy)
-    gl, ps = grade(total)
+    gl, ps = grade(final_score)
 
     hit: list[str] = []
     miss: list[str] = []
-
-    if fr > 0.5:
-        hit.append("资金费率>0.5%，利于做空")
-    elif fr > 0:
-        miss.append("资金费率<0.5%，做空信号弱")
-    if fr < -0.1:
-        hit.append("资金费率<-0.1%，利于做多")
-    if abs(chg) >= 10:
-        hit.append(f"价格异动|{chg:.1f}%|显著")
-    if count24h >= 50000:
-        hit.append(f"Alpha count24h={count24h:,} 社区活跃")
+    if turnover_ratio is not None and turnover_ratio >= 0.5:
+        hit.append(f"换手率={turnover_ratio:.2f} 投机活跃")
+    else:
+        miss.append("换手率不足")
+    if 3 <= chg <= 30:
+        hit.append(f"24h动能处于启动区间({chg:+.1f}%)")
+    elif chg > 60:
+        miss.append("24h涨幅过大，疑似后排追高")
+    if top10_ratio is not None and top10_ratio <= 0.35:
+        hit.append(f"前十持仓={top10_ratio:.1%} 相对健康")
+    elif top10_ratio is not None:
+        miss.append(f"前十持仓={top10_ratio:.1%} 偏集中")
+    if cluster_rug_ratio is not None and cluster_rug_ratio <= 0.35:
+        hit.append(f"Cluster rug risk={cluster_rug_ratio:.0%} 可接受")
+    elif cluster_rug_ratio is not None:
+        miss.append(f"Cluster rug risk={cluster_rug_ratio:.0%} 偏高")
+    if signal_wallet_count >= 3:
+        hit.append(f"OKX 聚合信号钱包数={signal_wallet_count}")
+    elif signal_wallet_count == 0:
+        miss.append("缺少 OKX 聪明钱共振")
+    if market_cap > 0:
+        hit.append(f"市值=${market_cap/1e6:.1f}M")
+    if okx_x_rank is not None and okx_x_rank <= 15:
+        hit.append(f"OKX X热度排名 #{okx_x_rank}")
     elif count24h == 0:
-        miss.append("无Alpha社区数据")
-        mf.append("alpha_count24h")
-    if k1h.get("trend") == "bullish":
-        hit.append("趋势结构: EMA多头排列")
-    elif k1h.get("trend") == "bearish":
-        hit.append("趋势结构: EMA空头排列")
-    if k4h and k4h.get("trend"):
-        if k4h["trend"] == k1h.get("trend"):
-            hit.append(f"双周期共振: 4H+1H均{k4h['trend']}")
-        else:
-            miss.append(f"双周期矛盾: 4H={k4h['trend']} vs 1H={k1h.get('trend')}")
-    if k1h.get("atr_pct") and k1h["atr_pct"] >= 0.08:
-        hit.append(f"ATR波动率: {k1h['atr_pct']*100:.1f}% 有足够空间")
-    if vol >= 100e6:
-        hit.append("成交额>$100M 流动性良好")
-    elif vol < 20e6:
-        miss.append("成交额<$20M 流动性不足")
-    if oi_data and oi_data.get("oi_change_pct", 0) != 0:
-        oi_chg = oi_data["oi_change_pct"]
-        hit.append(f"OI变化: {oi_chg:+.1f}%")
+        miss.append("无 Binance Alpha 热度确认")
 
-    # P1-3: Classified missing field downgrade
-    missing_reasons = _classify_missing(ticker, funding, alpha, klines, klines_4h, oi, tradable=tradable)
-    missing_core = set(mf) & CORE_FIELDS
-
-    # Count fetch_errors vs asset_type
-    fetch_error_count = sum(1 for k, v in missing_reasons.items() if v == "fetch_error")
-    asset_type_count = sum(1 for k, v in missing_reasons.items() if v == "asset_type")
-
-    needs_manual_review = False
-    if missing_core:
-        needs_manual_review = True
-        # P1-3: More specific risk notes
-        if fetch_error_count > 0:
-            risk_notes.append(f"核心字段缺失({fetch_error_count}项): 数据拉取失败，建议重试")
-        if asset_type_count > 0:
-            risk_notes.append(f"核心字段缺失({asset_type_count}项): 资产类型不支持该字段")
-
-    # P1-3: Tiered downgrade based on cause
-    if fetch_error_count >= 3:
-        # Data quality issue — force watchlist but allow retry
-        total = min(total, 74)
-        decision = "watchlist"
-        can_enter = False
-        risk_notes.append("多项核心字段拉取失败，降级为观察池，建议重试后复核")
-    elif asset_type_count >= 3 and not tradable:
-        # Onchain asset with many missing fields — expected, do not harshly penalize
-        total = min(total, 60)  # Softer cap for onchain
-        if total < 50:
-            decision = "reject"
-        else:
-            decision = "watchlist"
-        can_enter = False
-        risk_notes.append("链上资产数据维度有限，仅供观察参考")
+    fetch_error_count = sum(1 for reason in missing_reasons.values() if reason == "fetch_error")
+    needs_manual_review = decision == "manual_review" or fetch_error_count >= 2
+    if fetch_error_count >= 2:
+        risk_notes.append(f"关键字段拉取失败 {fetch_error_count} 项，建议重试复核")
+    if not tradable and decision == "watch_only":
+        risk_notes.append("链上强度达标，但当前无法承接 Binance 模拟交易")
 
     regime = "risk_on" if btc_dir == "up" else ("risk_off" if btc_dir == "down" else "neutral")
 
     return {
         "symbol": symbol,
         "decision": decision,
-        "total": total,
-        "total_score": total,
+        "total": final_score,
+        "total_score": final_score,
+        "final_score": final_score,
+        "oos": oos,
+        "ers": ers,
         "direction": direction,
         "can_enter": can_enter,
         "confidence": confidence,
@@ -904,17 +709,29 @@ def score_candidate(
         "mapping_confidence": mapping_confidence,
         "venue": "binance/okx" if tradable and market_type == "cex_perp" else ("gmgn/onchain" if not tradable else "unknown"),
         "module_scores": {
-            "safety_liquidity": m1,
-            "price_volume": m2,
-            "onchain_smart_money": m3,
-            "social_narrative": m4,
-            "market_regime": m5,
-            # backward-compat aliases
-            "m1_safety": m1,
-            "m2": m2,
-            "m3": m3,
-            "m4": m4,
-            "m5": m5,
+            "turnover_activity": turnover_activity,
+            "momentum_window": momentum_window,
+            "holder_structure": holder_structure,
+            "smart_money_resonance": smart_money_resonance,
+            "market_cap_fit": market_cap_fit,
+            "intraday_position": intraday_position,
+            "social_heat": social_heat,
+            "execution_mapping": execution_mapping,
+            "execution_alpha": execution_alpha,
+            "execution_liquidity": execution_liquidity,
+            "execution_timing": execution_timing,
+            "data_quality": data_quality,
+            # compatibility aliases for the existing report/test surface
+            "safety_liquidity": holder_structure,
+            "price_volume": momentum_window,
+            "onchain_smart_money": smart_money_resonance,
+            "social_narrative": social_heat,
+            "market_regime": score_market_regime(btc_dir, alt_rotation=alt_rotation),
+            "m1_safety": holder_structure,
+            "m2": momentum_window,
+            "m3": smart_money_resonance,
+            "m4": social_heat,
+            "m5": score_market_regime(btc_dir, alt_rotation=alt_rotation),
             "m6": 0,
         },
         "hard_reject": False,
@@ -938,7 +755,13 @@ def score_candidate(
             "count24h": count24h,
             "regime": regime,
             "oi": oi_data,
+            "day_pos": day_pos,
+            "market_cap": market_cap,
+            "turnover_ratio": turnover_ratio,
+            "buyer_ratio": buyer_ratio,
+            "okx_x_rank": okx_x_rank,
             "gmgn": gmgn_sec or {},
+            "onchain": onchain_data,
             "ticker_source": ticker.get("source", "binance") if ticker else "",
             "funding_source": funding.get("source", "binance") if funding else "",
             "kline_source": ticker.get("source", "binance") if (ticker and klines) else "",
