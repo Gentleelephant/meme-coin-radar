@@ -1,372 +1,135 @@
 ---
 name: meme-coin-radar
-description: "妖币雷达 Phase 2.0 — Provider + Radar Logic 融合版，结合当前项目的多数据源/fallback 架构与 crypto-signal-radar 的配置化、纯逻辑评分、执行摘要和交易建议输出。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
-tags: ["crypto", "meme-coin", "funding-rate", "open-interest", "perpetual-swap", "okx", "sentiment", "binance", "atr", "ema", "gmgn", "smart-money", "sol", "pumpfun"]
+description: "妖币雷达 Phase 3.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
+tags: ["crypto", "meme-coin", "okx", "onchainos", "binance", "alpha", "paper-trade", "smart-money", "sol", "bnb"]
 category: crypto-trading
 license: MIT
 author: hermes
-version: "2.0.0"
+version: "3.0.0"
 metadata:
-  phase: "2.0"
-  data_sources: ["okx-market", "binance-cli", "binance-alpha", "gmgn-market", "hyperliquid-fallback"]
-  obsidian_alignment: "对齐 妖币判断指标.md 五大模块，并增加执行摘要与入场建议"
+  phase: "3.0"
+  data_sources: ["okx-onchainos", "binance-cli", "binance-alpha"]
+  scoring_model: "OOS + ERS + final decision"
   output: "analysis report + raw data to $XDG_STATE_HOME/meme-coin-radar/ or ~/.local/state/meme-coin-radar/ (fallback: system temp dir)"
   auto_script: "skills/meme-coin-radar/scripts/auto-run.py"
 ---
 
-# 🦊 妖币雷达 Phase 2.0 — Provider + Radar Logic 融合版
+# 妖币雷达 Phase 3.0
 
-> **定位**：从多 provider 数据里筛出值得做合约的妖币，并直接给出方向、入场区间、止盈止损和仓位建议。
-> **Phase 2.0 融合点**：
-> - 保留当前项目的 provider/fallback 架构：`OKX + Binance + GMGN + fallback`
-> - 引入 `crypto-signal-radar` 的配置层：`skills/meme-coin-radar/scripts/config.py`
-> - 引入纯逻辑评分层：`skills/meme-coin-radar/scripts/radar_logic.py`
-> - 报告新增 `Executive Summary`、`confidence`、`entry_reasons`
-> - 合约建议不再只给分数，还会输出可执行交易计划
-> **Obsidian 对齐**：评分权重和阈值参考 `妖币判断指标.md` 的五大模块体系
+> 定位：先用 `OKX OnchainOS` 找链上热点和结构信号，再用 `Binance Alpha + Futures` 判断能否承接到模拟交易。
 
----
+## 核心模型
 
-## 🔧 数据步骤与 Skill 映射表
+- `Onchain Opportunity Score (OOS)`：判断这个标的是不是值得关注的链上机会。
+- `Execution Readiness Score (ERS)`：判断当前是否适合承接到 Binance 模拟盘。
+- `Final Decision`：
+  - `recommend_paper_trade`
+  - `watch_only`
+  - `manual_review`
+  - `reject`
 
-> **说明**：运行 `auto-run.py` 脚本时，各步骤数据获取方式一览。
-> 当前实现采用 `skill_dispatcher.py + providers/* + radar_logic.py` 三层结构。
-> 以下表格用于理解数据血缘和维护入口。
+## 数据流水线
 
-| Step | 数据内容 | 获取方式 | 底层命令 / API | 对应 Skill（参考） |
-|---:|---|---|---|---|
-| 0 | BTC 大盘状态 | `skill_dispatcher.okx_btc_status()` | `okx market ticker BTC-USDT-SWAP` | `okx-cex-market` |
-| 0.5 | Binance Alpha 社区活跃度 | `skill_dispatcher.binance_alpha()` | `binance-cli alpha token-list --json` | `binance` |
-| 1 | OKX 全量 USDT-M SWAP tickers | `skill_dispatcher.okx_swap_tickers()` | `okx market tickers SWAP` | `okx-cex-market` |
-| 2 | ticker + funding + K线 | `skill_dispatcher.batch_binance()` | `binance-cli futures-usds ...` + fallback | `binance` |
-| G1 | GMGN SOL 热门代币排行 | `skill_dispatcher.gmgn_trending()` | GMGN API / `gmgn-cli market trending` | `gmgn-market` |
-| G2 | GMGN BSC 热门代币排行 | 同上，换 `chain="bsc"` | GMGN API / `gmgn-cli market trending` | `gmgn-market` |
-| G3 | GMGN 聪明钱实时信号 | `skill_dispatcher.gmgn_signal()` | GMGN API | `gmgn-market` |
-| G4 | GMGN Pump.fun 新代币 | `skill_dispatcher.gmgn_trenches()` | `gmgn-cli market trenches` | `gmgn-market` |
-| 3 | 五大模块评分计算 | `radar_logic.score_candidate()` | 本地 Python | 无，纯计算逻辑 |
-| 4 | 交易计划生成 | `radar_logic.build_trade_plan()` | 本地 Python | 无，纯计算逻辑 |
+| Step | 数据内容 | 获取方式 | 底层来源 |
+|---:|---|---|---|
+| 0 | BTC 大盘状态 | `skill_dispatcher.okx_btc_status()` | OKX CEX |
+| 0.5 | Binance Alpha 热度 | `skill_dispatcher.binance_alpha()` | Binance Alpha |
+| 1 | 链上候选发现 | `skill_dispatcher.okx_hot_tokens()` / `okx_signal_list()` / `okx_tracker_activities()` | OKX OnchainOS |
+| 2 | 链上快照补全 | `skill_dispatcher.okx_token_snapshot()` | OKX OnchainOS |
+| 3 | 执行承接数据 | `skill_dispatcher.batch_binance()` | Binance Futures |
+| 4 | 评分与交易计划 | `radar_logic.score_candidate()` / `build_trade_plan()` | 本地 Python |
 
-> **⚠️ 依赖说明**：
-> - `binance-cli` 命令与官方 Binance skill 保持一致
-> - `npx gmgn-cli` — Node.js 环境，GMGN API Key 配置在 `~/.config/gmgn/.env`
-> - 当 `OKX CLI` 缺失或 `Binance futures` 不可达时，provider 层会尝试 fallback，而不是让整个流程失败
+## 候选模式
 
----
+### `meme_onchain`
 
-## ⚠️ OKX Demo 模式限制说明（重要！）
+适合妖币、热点链上标的，优先看：
 
-OKX Demo 环境（`okx --demo`）不支持以下命令：
+- 换手率 / 活跃度
+- 动能窗口
+- 持有人结构
+- 聪明钱共振
+- X 热度
 
-| 命令 | 状态 | 替代方案 |
-|---|---|---|
-| `okx market filter` | ❌ 不可用 | 用 `okx market tickers SWAP` 全量拉 + Python 解析 |
-| `okx market oi-change` | ❌ 不可用 | 用 Binance Alpha `count24h` 替代社区情绪指标 |
-| `okx news sentiment-rank` | ❌ 不可用 | 用 Binance Alpha `count24h` 替代（更量化，无需认证）|
-| `okx futures leverage` | ❌ 对 SWAP 报错 | 直接在 `okx swap place` 里加 `--tdMode cross` |
+### `majors_cex`
 
-**Demo 可用命令**：
+适合 `BTC / ETH / SOL / BNB / ZEC / HYPE` 这类主流或半主流标的，优先看：
 
-| 命令 | 用途 |
-|---|---|
-| `okx market tickers SWAP` | 全量 USDT-M SWAP tickers |
-| `okx market ticker <instId>` | 单币行情 |
-| `okx market funding-rate <instId>` | 资金费率查询 |
-| `okx swap place --instId <instId> --side buy --ordType market --sz N --tdMode cross` | 下单（仅限已上线币种） |
-| `okx swap positions` | 查仓位 |
+- Binance 成交额 / 波动 / OI / funding
+- Alpha 热度确认
+- 4H / 1H 趋势结构
+- 执行承接与入场时机
 
-**⚠️ 新币必须先确认可用**：`okx market instruments --instType SWAP | grep KAT`（KAT 等小币在 Demo 可能没有 USDT-M 合约）
+> `majors_cex` 不强依赖完整链上筹码字段，避免主流币因 OKX 链上覆盖不足被误伤。
 
----
+## 评分结构
 
-**Trigger words**: `跑妖币雷达` / `扫描妖币` / `meme radar` / `扫一下妖币`
+### OOS（满分 100）
 
-任选其一即可触发：
+- 换手率 / 活跃度：25
+- 动能窗口：20
+- 持有人结构 / 筹码健康度：20
+- 聪明钱与地址共振：15
+- 市值区间：10
+- 日内位置：5
+- 社交 / X 热度：5
+
+### ERS（满分 100）
+
+- Binance 映射可执行性：35
+- Binance Alpha 热度确认：20
+- 波动 / 流动性适合模拟盘：20
+- 入场时机：15
+- 数据完整度与映射置信度：10
+
+## 运行入口
+
+触发词：
+
 - `跑妖币雷达`
 - `扫描妖币`
 - `meme radar`
-- `扫一下妖币`
 - `跑一遍雷达`
-- `升级版雷达`（强制使用 Phase 1.5 流程）
 
----
-
-## 🔄 Phase 版本对比
-
-| 对比项 | Phase 1 | Phase 1.7 | Phase 2.0 ⭐ |
-|---|---|---|---|
-| 大盘过滤 | ❌ 无 | ✅ BTC 状态先行 | ✅ BTC 状态先行 + alt_rotation 判定 |
-| 情绪数据 | ❌ 无 | ✅ Binance Alpha (count24h) | ✅ Binance Alpha + 4H 双周期验证 |
-| ATR/EMA 趋势结构 | ❌ 无 | ✅ Module 2 趋势子项 | ✅ 量价趋势 30 分 + 4H 共振 |
-| 安全否决层 | ❌ 无 | ✅ CEX 基础安全 | ✅ **7 条 Obsidian 硬否决** |
-| 模块评分 | ❌ 无 | ✅ 五大模块对齐 | ✅ **五大模块（25/30/20/15/10）** + OI 四象限 |
-| GMGN Chain层扫描 | ❌ 无 | ❌ 无 | ✅ **SOL/BSC 热门 + 聪明钱信号** |
-| OI 四象限 | ❌ 无 | ❌ 无 | ✅ **Binance OI + 价格联动评分** |
-| R:R 校验 | ❌ 无 | ❌ 无 | ✅ **≥ 1.5 风险回报比强制校验** |
-| 精确仓位 | ❌ 无 | ❌ 无 | ✅ **基于账户权益 × 止损幅度计算** |
-| Obsidian 对齐 | ❌ 无 | ⚠️ 部分 | ✅ **完全对齐五大模块 + 硬否决** |
-| 输出 | TOP3 候选 | TOP8 机会队列 | TOP8 + JSON + GMGN Layer 0 |
-
----
-
-## 📡 Phase 2.0 工作流（数据对齐 Obsidian 五大模块）
-
-### Step 0 — 大盘环境检查
-
-**先行过滤**：BTC > $105K → 大盘多头；BTC < $95K → 大盘空头；区间 → 多空均可。
-
-```bash
-okx market ticker BTC-USDT-SWAP --json
-```
-
-### Step 0.5 — Binance Alpha 社区活跃度
-
-> 同 Phase 1.6，`count24h` 作为社交叙事的代理指标。
-
-```bash
-npx -y @binance/binance-cli alpha token-list --json
-```
-
-### Step 1 — OKX 全量 USDT-M SWAP Tickers
-
-```bash
-okx market tickers SWAP > /tmp/tickers.txt
-# Python 解析：提取涨幅TOP20 + 跌幅TOP20
-```
-
-### Step 2 — Binance 批量数据（含 K线计算 ATR/EMA）
-
-> **Phase 1.7 新增**：同时拉取 ticker + funding + 50根1h K线，用于计算 ATR14 + EMA20/50。
-
-```python
-# Binance K线计算 ATR/EMA（见 auto-run.py）
-# GET /fapi/v1/klines?symbol=XXX&interval=1h&limit=50
-# ATR14: 平均真实波幅（用K线高/低/收盘估算）
-# EMA20/50: 指数移动平均线，判断趋势结构
-# 趋势结构: bullish(=price>ema20>ema50) / weak_recovery / bearish
-```
-
-### Step 3 — 五大模块量化评分
-
-> 对齐 Obsidian `妖币判断指标.md` 的五大模块。链上数据不可用时自动跳过。
-
-| 模块 | 对齐 Obsidian | 数据来源 | 可用性 |
-|---|---|---|---|
-| Module 1: 安全 | 安全与流动性 | Binance ticker vol + 上市状态 | ✅ 可获取 |
-| Module 2: 量价 | 量价与持仓 | Binance ticker + K线 ATR | ✅ 可获取 |
-| Module 3: 链上与聪明钱 | OI/聪明钱/资金费率 | Binance OI + Funding + GMGN | ✅ 可获取 |
-| Module 4: 社交叙事 | 社交与叙事 | Binance Alpha count24h | ✅ 可获取 |
-| Module 5: 市场环境 | 市场环境 | BTC 方向 + alt_rotation 判定 | ✅ 可获取 |
-| ~~Module 6~~ | ~~(已合并到 Module 3)~~ | ~~资金费率~~ | ~~已合并~~ |
-| LP锁定比例 | 安全层 | 免费API不可用 | ⚠️ 跳过 |
-| 持仓集中度 | 安全层 | 免费API不可用 | ⚠️ 跳过 |
-| 聪明钱净流入 | 链上层 | 免费API不可用 | ⚠️ 跳过 |
-| 持有人增长率 | 链上层 | 免费API不可用 | ⚠️ 跳过 |
-| KOL独立提及数 | 社交层 | 免费API不可用 | ⚠️ 跳过 |
-
-### Step 4 — 综合评分 & 输出报告
-
----
-
-## 🧠 Phase 2.0 五大模块评分体系（对齐 Obsidian 五大模块）
-
-> 本评分体系对齐 Obsidian `资料库/妖币判断指标.md`，但 **数据获取限制**：
-> - Obsidian 评分体系中有大量链上数据（`holders_growth`、`smart_money_inflow`、`LP锁定`、`持仓集中度`）免费 API 无法获取
-> - Phase 1.7 用 Binance 可获取数据替代或跳过，保持评分框架完整
-
-### Module 1: 安全与流动性（0-25分，硬否决层）
-
-| 子项 | 条件 | 分数 | 说明 |
-|---|---|---:|---|
-| 硬否决 | CEX 无上市数据 | **reject** | 无法验证安全性 |
-| 成交额 | ≥ $100M | +8 | Binance流动性确认 |
-| 成交额 | $20M-$100M | +3 | 软通过 |
-| Binance合约 | funding API可用 | +8 | Binance已上线 = 经过一定审核 |
-| Binance合约 | 仅ticker可用 | +4 | 降权通过 |
-| 高费率+高成交 | fr > 0.5% 且 vol > $100M | +4 | 做空多头接盘明显 |
-
-### Module 2: 量价与趋势（0-30分）
-
-| 子项 | 条件 | 分数 | 说明 |
-|---|---|---:|---|
-| ATR波动 | atr_pct ≥ 8% | +6 | 有足够交易空间 |
-| ATR波动 | 5% ≤ atr_pct < 8% | +3 | |
-| 成交额 | ≥ $500M | +10 | |
-| 成交额 | $200M-$500M | +6 | |
-| 成交额 | $100M-$200M | +3 | |
-| 价格涨幅 | ≥ 30% | +6 | |
-| 价格涨幅 | ≥ 15% | +4 | |
-| 价格涨幅 | ≥ 5% | +2 | |
-| 价格异动 | abs(chg) ≥ 30% | +6 | 无论方向 |
-| 价格异动 | abs(chg) ≥ 15% | +4 | 无论方向 |
-| 价格异动 | abs(chg) ≥ 5% | +2 | 无论方向 |
-| EMA趋势 | bullish（price>ema20>ema50）| +6 | 趋势完整 |
-| EMA趋势 | weak_recovery | +2 | |
-| EMA趋势 | bearish | +0 | 知识库要求逆趋势不给分 |
-| 买盘主导 | 涨>3% 且 vol>$50M | +3 | |
-
-### ⚠️ 模块说明（与代码实现对照）
-
-> **注意**：以下表格为**代码真实映射**，SKILL.md 中历史遗留的独立 "Module 3: 趋势结构" 评分表已移除。
-> ATR/EMA 趋势评分实际在 **Module 2（量价与趋势）**中统一计算（满分 30 分）。
-
-| 模块 | 代码函数 | 满分 | 核心指标 |
-|---|---|---:|---|
-| M1: 安全与流动性 | `_score_safety_liquidity()` | 25 | 成交额 + Binance合约状态 + GMGN安全 |
-| M2: 量价与趋势 | `_score_price_volume_trend()` | 30 | ATR + volume_vs_7d + price_change_4h + EMA趋势 + 4H共振 |
-| M3: 链上与聪明钱 | `_score_onchain_smart_money()` | 20 | 聪明钱 + Holder增长 + OI四象限 + 资金费率 + 买卖比 |
-| M4: 社交与叙事 | `_score_social_narrative()` | 15 | Alpha count24h（社交多维度预留）|
-| M5: 市场环境 | `_score_market_regime()` | 10 | BTC方向 + alt_rotation |
-
-> ATR14 计算：`sum(TR[-14:]) / 14`，TR = max(H-L, |H-Pclose|, |L-Pclose|)
-> EMA20/50：Binance 1h K线 Close 价格计算
-
-### Module 4: 社交与叙事（0-15分，Alpha count24h）
-
-| 子项 | 条件 | 分数 | 说明 |
-|---|---|---:|---|
-| count24h | ≥ 100,000 且有价格异动 | +8 | 极高活跃度 + 信号确认 |
-| count24h | 50,000–100,000 | +4~6 | 高活跃 |
-| count24h | 20,000–50,000 | +2 | 中等活跃 |
-| count24h | > 0 | +1 | 低活跃 |
-| 酝酿信号 | count24h ≥ 50k 但无价格异动 | +3 | 观察区，可能酝酿中 |
-| count24h缺失 | — | 跳过不扣分 | 报告记录 |
-
-### Module 5: 市场环境（0-10分）
-
-| 子项 | 条件 | 分数 |
-|---|---|---:|
-| BTC上涨 > 2% | 大盘多头 | +7 |
-| BTC横盘 | 中性 | +4 |
-| BTC下跌 | 大盘空头 | +0 |
-
-### 资金费率作用说明
-
-> **注意**：Phase 2.0 中资金费率**已从独立 Module 6 合并到 Module 3（链上与聪明钱模块）**，作为子项评分（满分 20 分中占 2 分）。
-> 同时，资金费率在**方向信号（`_direction_signal`）**中作为方向偏置的核心因子，直接影响做多/做空的 bias 计算（最高 ±14 分）。
-
-| 位置 | 作用 | 分值范围 |
-|---|---|---:|
-| Module 3 子项 |  mild 正费率 `0 < fr <= 2%` 或负费率 `fr <= -0.2%` | +1~+2 |
-| 方向信号偏置 | `fr > 0.5%` → 做空偏置 +14；`fr < -0.2%` → 做多偏置 +14 | ±5~±14 |
-
-### 共振加成（额外加分）
-
-| 条件 | 额外加分 |
-|---|---:|
-| fr > 0.5% + 下跌 >5% + count24h > 30k | +8（做空共振）|
-| 下跌 >10% + fr < -0.1% | +10（最佳做多窗口）|
-
-### 信号等级
-
-| 等级 | 总分 | 操作 |
-|---|---|---|
-| 🏆 极强 | 85+ | 优先入场，3%风险/5x杠杆 |
-| ⭐ 强 | 75-84 | 入场，2%风险/5x杠杆 |
-| 观察 | 50-74 | 进入观察池，1%风险/3x杠杆 |
-| ❌ 过滤 | <50 | 直接排除，不输出 |
-
----
-
-## 📋 报告输出格式（Phase 2.0）
-
-```markdown
-# 🦊 妖币雷达 Phase 2.0 扫描报告
-
-## Executive Summary
-- 扫描候选数
-- 可执行建议数
-- 当前市场偏向
-- 优先关注币种
-
-## 📊 大盘环境
-| 指标 | 数值 | 方向 |
-|---|---|---|
-| BTC 价格 | $XXX | ↑/↓/横 |
-| 市场判断 | 多头/空头/均可 | — |
-
-## 🎯 合约建议
-| 币种 | 方向 | 置信度 | 入场区间 | 止损 | 止盈1 | 止盈2 |
-
-## 🏆 机会队列（Provider + Radar Logic）
-
-| 评级 | 币种 | 方向 | 总分 | 置信度 | 可执行 | 安全 | 量价 | 趋势 | 社交 | 环境 | 费率 |
-
-### 详细信号（TOP3，含 entry_reasons）
-### ❌ 安全否决区
-### 🚀 GMGN Chain层机会板块
-```
-
-## 📁 数据存储
-
-```
-$XDG_STATE_HOME/meme-coin-radar/scan_[YYYYMMDD_HHMMSS]/
-或 ~/.local/state/meme-coin-radar/scan_[YYYYMMDD_HHMMSS]/
-若状态目录不可写则回退到系统临时目录下的 meme-coin-radar/
-├── 00_btc_status.json         ← BTC大盘状态
-├── 01_all_tickers.json        ← OKX 全量 USDT-M SWAP tickers
-├── 02_binance_batch.json      ← provider ticker + funding + K线可用性
-├── 04_binance_alpha.json      ← Binance Alpha token-list
-├── 05_gmgn_sol_trending.json  ← GMGN SOL 热门币
-├── 06_gmgn_bsc_trending.json  ← GMGN BSC 热门币
-├── 07_gmgn_signals.json       ← GMGN 聪明钱信号
-├── 08_gmgn_trenches_sol.json  ← GMGN 新币数据
-└── report.md                  ← Phase 2.0 最终报告
-```
-
----
-
-## ⚠️ 数据可用性说明（重要！）
-
-Phase 1.7 对齐 Obsidian `妖币判断指标.md` 的评分框架，但以下数据免费 API **无法获取**：
-
-| 数据 | 替代/处理 |
-|---|---|
-| LP锁定比例 | ⚠️ 跳过，报告记录 `missing_fields: ["lp_locked_ratio"]` |
-| 前十持仓集中度 | ⚠️ 跳过，用 Binance 上市状态间接替代 |
-| 合约高危权限 | ⚠️ 跳过，无法检测 mintable/blacklist/pausable |
-| 部署者持仓占比 | ⚠️ 跳过，无法检测初始分配 |
-| 持有人增长率 | ⚠️ 跳过，OKX Demo 不支持链上数据 |
-| 聪明钱净流入 | ⚠️ 跳过，OKX Demo 不支持 |
-| 独立 KOL 提及数 | ⚠️ 用 Binance Alpha count24h 替代 |
-| 叙事标签匹配 | ⚠️ 跳过，无法判断叙事热点 |
-| ATR 相对30日均值 | ⚠️ 跳过，只用当前 ATR14 |
-
-> **设计原则**：缺失数据不影响评分进程，报告记录缺失字段供人工复核。
-
----
-
-## 🚀 后续规划（自动化 + 推送）
-
-Phase 2.0 已完成 provider + logic 融合。下一步聚焦自动化：
-
-| 功能 | 状态 | 说明 |
-|---|---|---|
-| 一键自动脚本 | ✅ Phase 2.0 | provider + 评分 + 交易计划 |
-| 配置化阈值 | ✅ Phase 2.0 | `skills/meme-coin-radar/scripts/config.py` |
-| 纯逻辑评分测试 | ✅ Phase 2.0 | `skills/meme-coin-radar/tests/test_radar_logic.py` |
-| 执行摘要与置信度 | ✅ Phase 2.0 | 报告层已接入 |
-| 定时扫描（cron）| 🔜 待做 | 每6h自动跑，signal >= 65 才推送 |
-| TG 推送 | 🔜 待做 | 有强信号时推送到 Home Channel |
-| Real 盘小资金测试 | 🔜 待做 | 信号评分 85+ 后才考虑 |
-
-后续触发词：**"升级妖币雷达"** 或 **"开启定时扫描"** 或 **"妖币 TG 推送"**
-
----
-
-## 🛠️ 一键自动脚本
+脚本入口：
 
 ```bash
 python3 skills/meme-coin-radar/scripts/auto-run.py
 ```
 
-脚本自动完成 Phase 2.0 全流程：
-1. BTC 大盘状态检查
-2. Binance Alpha count24h 社区活跃度
-3. GMGN 热门币 / 聪明钱 / 新币扫描
-4. OKX 全量 USDT-M SWAP tickers 解析
-5. Binance 官方 skill 命令风格的批量 ticker + funding + K线
-6. **五大模块量化评分**（安全/量价/链上聪明钱/社交/环境）
-7. 生成 `Executive Summary + 合约建议 + 详细信号` 报告到 `$XDG_STATE_HOME/meme-coin-radar/scan_XXX/report.md`
-   若状态目录不可写，则自动回退到系统临时目录下的 `meme-coin-radar/`
+## 输出结果
 
-*⚠️ 本报告仅供参考，不构成投资建议。DYOR！*
+扫描目录会生成：
+
+- `report.md`
+- `result.json`
+- `00_btc_status.json`
+- `01_all_tickers.json`
+- `02_binance_batch.json`
+- `04_binance_alpha.json`
+- `05_okx_hot_trending.json`
+- `06_okx_hot_x.json`
+- `07_okx_signals.json`
+- `08_okx_tracker.json`
+- `09_fetch_status.json`
+- `10_data_freshness.json`
+- `11_onchain_snapshots.json`
+
+## 代码结构
+
+- `scripts/auto-run.py`：主编排入口
+- `scripts/skill_dispatcher.py`：数据抓取分发层
+- `scripts/providers/onchainos.py`：OKX OnchainOS provider
+- `scripts/providers/binance.py`：Binance provider
+- `scripts/candidate_discovery.py`：候选发现
+- `scripts/asset_mapping.py`：链上标的到 Binance 执行标的映射
+- `scripts/scoring_modules.py`：分项评分函数
+- `scripts/radar_logic.py`：总评分与交易计划
+
+## 注意事项
+
+- 当前执行层只服务 `Binance 模拟盘`，不默认做自动实盘。
+- skill 可以组合使用多个外部 skill 的底层能力，但工程实现应沉到 `providers/`，不要写成 skill 互相调用。
+- 如果项目代码更新，`SKILL.md` 需要同步维护，否则使用者看到的工作流和真实代码会脱节。
+
+*仅用于研究与模拟验证，不构成投资建议。*

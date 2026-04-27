@@ -23,6 +23,7 @@ class Candidate:
         candidate_sources: list[str],
         tradable_on_cex: bool = False,
         market_type: str = "onchain_spot",
+        strategy_mode: str = "meme_onchain",
         token_address: str = "",
         chain: str = "",
         metadata: dict[str, Any] | None = None,
@@ -31,6 +32,7 @@ class Candidate:
         self.candidate_sources = list(candidate_sources)
         self.tradable_on_cex = tradable_on_cex
         self.market_type = market_type
+        self.strategy_mode = strategy_mode
         self.token_address = token_address
         self.chain = chain
         self.metadata = metadata or {}
@@ -41,6 +43,7 @@ class Candidate:
             "candidate_sources": self.candidate_sources,
             "tradable_on_cex": self.tradable_on_cex,
             "market_type": self.market_type,
+            "strategy_mode": self.strategy_mode,
             "token_address": self.token_address,
             "chain": self.chain,
             "metadata": self.metadata,
@@ -77,15 +80,13 @@ def discover_candidates(
     okx_tracker_activities: list[dict] | None = None,
     alpha_dict: dict | None = None,
     key_coins: list[str] | tuple[str, ...] = (),
+    major_coins: list[str] | tuple[str, ...] = (),
     all_tickers: list[dict] | None = None,
-    gmgn_sol_trending: list[dict] | None = None,
-    gmgn_bsc_trending: list[dict] | None = None,
-    gmgn_signals: list[dict] | None = None,
-    gmgn_trenches: list[dict] | None = None,
     top_alpha_n: int = 15,
 ) -> list[Candidate]:
     candidates: dict[str, Candidate] = {}
     alpha_dict = alpha_dict or {}
+    major_set = {str(symbol).upper() for symbol in major_coins}
 
     def _ensure(
         sym: str,
@@ -94,11 +95,13 @@ def discover_candidates(
         chain: str = "",
         tradable: bool = False,
         mtype: str = "onchain_spot",
+        strategy_mode: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Candidate:
         symbol = sym.upper().strip()
         if not symbol:
             raise ValueError("symbol is required")
+        candidate_strategy_mode = strategy_mode or ("majors_cex" if symbol in major_set else "meme_onchain")
         candidate = candidates.get(symbol)
         if candidate is None:
             candidate = Candidate(
@@ -106,6 +109,7 @@ def discover_candidates(
                 candidate_sources=[source],
                 tradable_on_cex=tradable,
                 market_type=mtype,
+                strategy_mode=candidate_strategy_mode,
                 token_address=token_address,
                 chain=chain,
                 metadata=meta or {},
@@ -117,6 +121,8 @@ def discover_candidates(
             if tradable:
                 candidate.tradable_on_cex = True
                 candidate.market_type = mtype
+            if candidate.strategy_mode != "majors_cex" and candidate_strategy_mode == "majors_cex":
+                candidate.strategy_mode = "majors_cex"
             if token_address and not candidate.token_address:
                 candidate.token_address = token_address
             if chain and not candidate.chain:
@@ -140,6 +146,7 @@ def discover_candidates(
             chain=meta["chain"],
             tradable=False,
             mtype="onchain_spot",
+            strategy_mode="meme_onchain",
             meta=meta,
         )
 
@@ -155,6 +162,7 @@ def discover_candidates(
             chain=meta["chain"],
             tradable=False,
             mtype="onchain_spot",
+            strategy_mode="meme_onchain",
             meta=meta,
         )
 
@@ -172,6 +180,7 @@ def discover_candidates(
             chain=chain,
             tradable=False,
             mtype="onchain_spot",
+            strategy_mode="meme_onchain",
             meta={"chain": chain, "address": address, "onchain_data": {"signal": item}},
         )
 
@@ -190,6 +199,7 @@ def discover_candidates(
             chain=chain,
             tradable=False,
             mtype="onchain_spot",
+            strategy_mode="meme_onchain",
             meta={"chain": chain, "address": address, "onchain_data": {"tracker": item}},
         )
 
@@ -200,25 +210,19 @@ def discover_candidates(
             "alpha_hot",
             tradable=True,
             mtype="cex_perp",
+            strategy_mode="majors_cex" if str(sym).upper() in major_set else "meme_onchain",
             meta={"binance_alpha_symbol": str(sym).upper(), "alpha_data": data},
         )
 
     for sym in key_coins:
-        _ensure(str(sym), "key_coins", tradable=True, mtype="cex_perp")
-
-    # Keep compatibility with older discovery sources if they are still supplied.
-    for legacy in (gmgn_sol_trending or []) + (gmgn_bsc_trending or []):
-        symbol = str(legacy.get("symbol") or "").upper()
-        if not symbol:
-            continue
+        symbol = str(sym).upper()
         _ensure(
             symbol,
-            "legacy_gmgn",
-            token_address=str(legacy.get("address") or ""),
-            chain=_norm_chain(legacy.get("chain")),
-            tradable=False,
-            mtype="onchain_spot",
-            meta={"chain": _norm_chain(legacy.get("chain")), "address": str(legacy.get("address") or ""), "gmgn_data": legacy},
+            "key_coins",
+            tradable=True,
+            mtype="cex_perp",
+            strategy_mode="majors_cex" if symbol in major_set else "meme_onchain",
+            meta={"market_profile": "major" if symbol in major_set else "watchlist"},
         )
 
     return list(candidates.values())

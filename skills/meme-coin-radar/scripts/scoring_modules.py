@@ -149,6 +149,57 @@ def score_market_cap_fit(market_cap: float) -> int:
     return 0
 
 
+def score_major_market_cap_fit(market_cap: float) -> int:
+    if market_cap <= 0:
+        return 6
+    if market_cap >= 10e9:
+        return 10
+    if market_cap >= 1e9:
+        return 8
+    if market_cap >= 300e6:
+        return 6
+    return 4
+
+
+def score_major_holder_structure_proxy(
+    holder_structure_score: int,
+    volume: float,
+    trend_1h: str | None,
+    trend_4h: str | None,
+    alpha_count24h: int,
+) -> int:
+    if holder_structure_score > 0:
+        return holder_structure_score
+    score = 4
+    if volume >= 100e6:
+        score += 2
+    if trend_1h in {"bullish", "weak_recovery"}:
+        score += 2
+    if trend_4h in {"bullish", "weak_recovery"}:
+        score += 2
+    if alpha_count24h >= 50000:
+        score += 2
+    return min(score, 12)
+
+
+def score_major_participation_proxy(signal_score: int, alpha_count24h: int, oi_change_pct: float | None) -> int:
+    if signal_score > 0:
+        return signal_score
+    score = 0
+    if alpha_count24h >= 100000:
+        score += 6
+    elif alpha_count24h >= 50000:
+        score += 4
+    elif alpha_count24h > 0:
+        score += 2
+    if oi_change_pct is not None:
+        if oi_change_pct >= 5:
+            score += 4
+        elif oi_change_pct >= 2:
+            score += 2
+    return min(score, 10)
+
+
 def score_intraday_position(day_pos: float | None) -> int:
     if day_pos is None:
         return 0

@@ -15,6 +15,9 @@ try:
         score_execution_timing,
         score_holder_structure,
         score_intraday_position,
+        score_major_holder_structure_proxy,
+        score_major_market_cap_fit,
+        score_major_participation_proxy,
         score_market_regime,
         score_market_cap_fit,
         score_momentum_window,
@@ -36,6 +39,9 @@ except ImportError:
         score_execution_timing,
         score_holder_structure,
         score_intraday_position,
+        score_major_holder_structure_proxy,
+        score_major_market_cap_fit,
+        score_major_participation_proxy,
         score_market_regime,
         score_market_cap_fit,
         score_momentum_window,
@@ -174,8 +180,6 @@ def _classify_missing(
 def _hard_reject_check(
     symbol: str,
     ticker: dict | None,
-    gmgn_token: dict | None,
-    gmgn_sec: dict | None,
     atr_pct: float | None,
     atr_vs_30d: float | None,
 ) -> tuple[bool, list[str], list[str]]:
@@ -188,59 +192,8 @@ def _hard_reject_check(
 
     vol = float(ticker.get("volume") or 0) if ticker else 0.0
 
-    # Rule 1: contract_risk_flags (mintable/blacklist/pausable) AND ownership not renounced
-    if gmgn_token:
-        crf = gmgn_token.get("contract_risk_flags", [])
-        if isinstance(crf, str):
-            crf = [f.strip() for f in crf.split(",") if f.strip()]
-        dangerous = {"mintable", "blacklist", "pausable"}
-        if any(flag in dangerous for flag in crf):
-            if not bool(gmgn_token.get("ownership_renounced", False)):
-                reject = True
-                reasons.append(f"合约高危权限未放弃: {crf}")
-
-    # Rule 2: liquidity < $50K
-    if gmgn_token:
-        liquidity = float(gmgn_token.get("liquidity") or 0)
-        if 0 < liquidity < 50000:
-            reject = True
-            reasons.append(f"流动性=${liquidity:.0f}<$50K")
-
-    # Rule 3: deployer_holder_ratio > 10%
-    if gmgn_token:
-        dhr = float(gmgn_token.get("deployer_holder_ratio") or 0)
-        if dhr > 0.10:
-            reject = True
-            reasons.append(f"部署者持仓={dhr:.1%}>10%")
-
-    # Rule 4: top10_holder_ratio > 35%
-    top10 = gmgn_sec.get("top_10_holder_rate") if gmgn_sec else None
-    if top10 is not None and top10 > 0.35:
-        reject = True
-        reasons.append(f"前十持仓={top10:.1%}>35%")
-
     # Rule 5: trading unavailable / extreme slippage — not auto-detectable without simulation
     risk_notes.append("未模拟交易检测滑点（需人工确认）")
-
-    # Rule 6: obvious wash trading
-    gmgn_reject = gmgn_sec.get("reject") if gmgn_sec else False
-    if gmgn_reject and gmgn_sec.get("is_wash_trading"):
-        reject = True
-        reasons.append("GMGN标记洗量作弊")
-
-    # Additional heuristic: volume very high but few trades / buyers
-    if gmgn_token:
-        trades = int(gmgn_token.get("trades_24h") or 0)
-        buyers = int(gmgn_token.get("buyers_24h") or 0)
-        gmgn_vol = float(gmgn_token.get("volume_24h") or gmgn_token.get("volume") or 0)
-        if gmgn_vol > 0 and trades > 0:
-            avg_trade = gmgn_vol / trades
-            if avg_trade > gmgn_vol * 0.3 and trades < 5:
-                reject = True
-                reasons.append("成交量与交易笔数严重不匹配，疑似刷量")
-        if buyers > 0 and trades > 0 and buyers / trades < 0.05:
-            reject = True
-            reasons.append("买家数/交易笔数过低，疑似刷量")
 
     # Rule 7: ATR insufficient (<4%) AND below 30-day average (<0.8x)
     if atr_pct is not None:
@@ -356,8 +309,6 @@ def score_candidate(
     btc_dir: str,
     missing_fields: list[str],
     settings: Settings,
-    gmgn_token: dict | None = None,
-    gmgn_security_score_fn=None,
     klines_4h: list | None = None,
     klines_1d: list | None = None,
     oi: dict | None = None,
@@ -367,6 +318,7 @@ def score_candidate(
     tradable: bool = True,
     market_type: str = "cex_perp",
     mapping_confidence: str = "native",
+    strategy_mode: str = "meme_onchain",
     onchain_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ticker = ticker or {}
@@ -391,12 +343,6 @@ def score_candidate(
     k4h = _klines_meta(klines_4h, price) if klines_4h else None
     if klines_4h and k4h and k4h["trend"] is None:
         mf.append("trend_4h")
-
-    gmgn_sec: dict[str, Any] | None = None
-    if gmgn_token and gmgn_security_score_fn:
-        gmgn_sec = gmgn_security_score_fn(gmgn_token)
-    if gmgn_token and not gmgn_sec:
-        mf.append("gmgn_security")
 
     price_info = onchain_data.get("price_info", {})
     advanced_info = onchain_data.get("advanced_info", {})
@@ -427,14 +373,8 @@ def score_candidate(
         int(to_float(hot_token.get("txs"))),
         len(trades_list),
     )
-    buyers_24h = max(
-        int(to_float(hot_token.get("txsBuy"))),
-        int(to_float(gmgn_sec.get("buyers_24h") if gmgn_sec else 0)),
-    )
-    sellers_24h = max(
-        int(to_float(hot_token.get("txsSell"))),
-        int(to_float(gmgn_sec.get("sellers_24h") if gmgn_sec else 0)),
-    )
+    buyers_24h = int(to_float(hot_token.get("txsBuy")))
+    sellers_24h = int(to_float(hot_token.get("txsSell")))
     turnover_ratio = safe_div(onchain_volume_24h, market_cap)
     trade_density = safe_div(float(txs_24h), float(max(holder_count, 1)))
     buyer_ratio = safe_div(float(buyers_24h), float(max(sellers_24h, 1)))
@@ -454,8 +394,6 @@ def score_candidate(
     top10_ratio = normalize_ratio(advanced_info.get("top10HoldPercent"))
     if top10_ratio is None:
         top10_ratio = normalize_ratio(hot_token.get("top10HoldPercent"))
-    if top10_ratio is None and gmgn_sec:
-        top10_ratio = gmgn_sec.get("top_10_holder_rate")
     new_wallet_ratio = normalize_ratio(cluster_overview.get("holderNewAddressPercent"))
     cluster_rug_ratio = normalize_ratio(cluster_overview.get("rugPullPercent"))
     cluster_concentration = str(cluster_overview.get("clusterConcentration") or "")
@@ -491,7 +429,7 @@ def score_candidate(
     if cluster_rug_ratio is not None and cluster_rug_ratio >= 0.60:
         reject = True
         reject_reasons.append(f"cluster_rug_risk={cluster_rug_ratio:.0%}过高")
-    liquidity = max(to_float(price_info.get("liquidity")), to_float(gmgn_token.get("liquidity") if gmgn_token else 0))
+    liquidity = to_float(price_info.get("liquidity"))
     if 0 < liquidity < 50000:
         reject = True
         reject_reasons.append(f"流动性=${liquidity:.0f}<$50K")
@@ -503,11 +441,6 @@ def score_candidate(
     if dev_ratio is not None and dev_ratio >= 0.15:
         reject = True
         reject_reasons.append(f"开发者持仓={dev_ratio:.0%}过高")
-    if gmgn_token:
-        deployer_ratio = to_float(gmgn_token.get("deployer_holder_ratio"), default=0.0)
-        if deployer_ratio > 0.10:
-            reject = True
-            reject_reasons.append(f"部署者持仓={deployer_ratio:.1%}>10%")
     if mapping_confidence == "low" and tradable:
         reject = True
         reject_reasons.append("Binance映射置信度过低")
@@ -563,7 +496,7 @@ def score_candidate(
                 "trend": k1h.get("trend"),
                 "day_pos": day_pos,
                 "market_cap": market_cap,
-                "gmgn": gmgn_sec or {},
+                "strategy_mode": strategy_mode,
             },
         }
 
@@ -598,9 +531,23 @@ def score_candidate(
         tracked_wallet_overlap=tracked_wallet_overlap,
         owned_smart_money_hit_count=owned_smart_money_hit_count,
     )
-    market_cap_fit = score_market_cap_fit(market_cap)
+    if strategy_mode == "majors_cex":
+        holder_structure = score_major_holder_structure_proxy(
+            holder_structure,
+            vol,
+            k1h.get("trend"),
+            k4h.get("trend") if k4h else None,
+            count24h,
+        )
+    market_cap_fit = score_major_market_cap_fit(market_cap) if strategy_mode == "majors_cex" else score_market_cap_fit(market_cap)
     intraday_position = score_intraday_position(day_pos)
     social_heat = score_social_heat(okx_x_rank, count24h)
+    if strategy_mode == "majors_cex":
+        smart_money_resonance = score_major_participation_proxy(
+            smart_money_resonance,
+            count24h,
+            to_float(oi.get("oi_change_pct"), default=None) if oi else None,
+        )
     oos = turnover_activity + momentum_window + holder_structure + smart_money_resonance + market_cap_fit + intraday_position + social_heat
 
     execution_mapping = score_execution_mapping(mapping_confidence, tradable)
@@ -621,9 +568,9 @@ def score_candidate(
     data_quality = score_data_quality(len(set(mf)), mapping_confidence)
     ers = execution_mapping + execution_alpha + execution_liquidity + execution_timing + data_quality
 
-    final_score = round(oos * 0.7 + ers * 0.3)
+    final_score = round(oos * 0.5 + ers * 0.5) if strategy_mode == "majors_cex" else round(oos * 0.7 + ers * 0.3)
 
-    sm_count = max(signal_wallet_count, int(gmgn_sec.get("smart_degen_count", 0)) if gmgn_sec else 0)
+    sm_count = signal_wallet_count
     can_enter, direction, confidence, entry_reasons = direction_signal(
         chg,
         fr,
@@ -637,7 +584,16 @@ def score_candidate(
         settings.min_direction_gap,
     )
 
-    if oos >= 70 and ers >= 65 and tradable:
+    if strategy_mode == "majors_cex":
+        if final_score >= 68 and ers >= 68 and tradable:
+            decision = "recommend_paper_trade"
+        elif final_score >= 58:
+            decision = "watch_only" if tradable else "manual_review"
+        elif len(set(mf)) >= 3:
+            decision = "manual_review"
+        else:
+            decision = "reject"
+    elif oos >= 70 and ers >= 65 and tradable:
         decision = "recommend_paper_trade"
     elif oos >= 70:
         decision = "watch_only"
@@ -706,8 +662,9 @@ def score_candidate(
         "position_size": ps,
         "tradable": tradable,
         "market_type": market_type,
+        "strategy_mode": strategy_mode,
         "mapping_confidence": mapping_confidence,
-        "venue": "binance/okx" if tradable and market_type == "cex_perp" else ("gmgn/onchain" if not tradable else "unknown"),
+        "venue": "binance/okx" if tradable and market_type == "cex_perp" else ("okx/onchain" if not tradable else "unknown"),
         "module_scores": {
             "turnover_activity": turnover_activity,
             "momentum_window": momentum_window,
@@ -760,7 +717,7 @@ def score_candidate(
             "turnover_ratio": turnover_ratio,
             "buyer_ratio": buyer_ratio,
             "okx_x_rank": okx_x_rank,
-            "gmgn": gmgn_sec or {},
+            "strategy_mode": strategy_mode,
             "onchain": onchain_data,
             "ticker_source": ticker.get("source", "binance") if ticker else "",
             "funding_source": funding.get("source", "binance") if funding else "",

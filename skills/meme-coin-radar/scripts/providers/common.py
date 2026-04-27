@@ -7,8 +7,6 @@ import time
 import urllib.request
 from typing import Any, Optional
 
-GMGN_API_KEY_FILE = os.path.expanduser("~/.config/gmgn/.env")
-
 
 # ── Structured fetch status (roadmap P0-1) ──────────────────────
 class FetchStatus:
@@ -161,14 +159,3 @@ def http_json_safe(
     except Exception as exc:
         latency = (time.time() - t0) * 1000
         return None, FetchStatus.from_exception(exc, source=source)
-
-
-def load_gmgn_key() -> Optional[str]:
-    try:
-        with open(GMGN_API_KEY_FILE) as handle:
-            for line in handle:
-                if line.startswith("GMGN_API_KEY"):
-                    return line.split("=", 1)[1].strip()
-    except Exception:
-        pass
-    return None

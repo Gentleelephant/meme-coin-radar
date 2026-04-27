@@ -66,8 +66,6 @@ class RadarLogicTest(unittest.TestCase):
             btc_dir="neutral",
             missing_fields=[],
             settings=settings,
-            gmgn_token=None,
-            gmgn_security_score_fn=None,
         )
         # With low momentum it should not be paper-trade ready
         self.assertIn(result["decision"], {"manual_review", "reject", "watch_only"})
@@ -82,7 +80,7 @@ class RadarLogicTest(unittest.TestCase):
         self.assertIn("needs_manual_review", result)
         self.assertIn("risk_notes", result)
 
-    def test_score_candidate_hard_reject_deployer(self) -> None:
+    def test_score_candidate_hard_reject_dev_holding(self) -> None:
         settings = Settings()
         result = score_candidate(
             symbol="SHITCOIN",
@@ -93,15 +91,17 @@ class RadarLogicTest(unittest.TestCase):
             btc_dir="up",
             missing_fields=[],
             settings=settings,
-            gmgn_token={
-                "deployer_holder_ratio": 0.15,
-                "liquidity": 100_000,
+            onchain_data={
+                "price_info": {"liquidity": "100000"},
+                "advanced_info": {
+                    "devHoldingPercent": "18",
+                    "suspiciousHoldingPercent": "2",
+                },
             },
-            gmgn_security_score_fn=None,
         )
         self.assertEqual(result["decision"], "reject")
         self.assertTrue(result["hard_reject"])
-        self.assertTrue(any("部署者" in r for r in result["reject_reasons"]))
+        self.assertTrue(any("开发者" in r for r in result["reject_reasons"]))
 
     def test_score_candidate_monster_candidate(self) -> None:
         settings = Settings(min_recommend_score=75.0)
@@ -117,8 +117,6 @@ class RadarLogicTest(unittest.TestCase):
             btc_dir="up",
             missing_fields=[],
             settings=settings,
-            gmgn_token=None,
-            gmgn_security_score_fn=None,
             klines_4h=klines_4h,
             mapping_confidence="high",
             onchain_data={
@@ -167,8 +165,6 @@ class RadarLogicTest(unittest.TestCase):
             btc_dir="neutral",
             missing_fields=[],
             settings=settings,
-            gmgn_token=None,
-            gmgn_security_score_fn=None,
             oi={"oi": 1000, "oi_change_pct": 5.0, "price_change_pct": 5.0},
         )
         self.assertIn("oi", result["meta"])
@@ -184,8 +180,6 @@ class RadarLogicTest(unittest.TestCase):
             btc_dir="neutral",
             missing_fields=["atr14", "trend", "oi", "fundingRate", "volume"],
             settings=settings,
-            gmgn_token=None,
-            gmgn_security_score_fn=None,
         )
         self.assertIn(result["decision"], {"manual_review", "reject", "watch_only"})
         self.assertTrue(result["needs_manual_review"])
@@ -260,6 +254,32 @@ class RadarLogicTest(unittest.TestCase):
         )
         self.assertEqual(result["decision"], "watch_only")
         self.assertFalse(result["can_enter"])
+
+    def test_major_coin_mode_uses_cex_profile(self) -> None:
+        settings = Settings()
+        klines_1h = [(100 + i, 102 + i, 99 + i, 101 + i, 10_000) for i in range(50)]
+        klines_4h = [(100 + i * 2, 103 + i * 2, 99 + i * 2, 102 + i * 2, 20_000) for i in range(20)]
+        result = score_candidate(
+            symbol="SOL",
+            ticker={"price": 180.0, "chg24h": 8.0, "volume": 950_000_000, "source": "test"},
+            funding={"fundingRate_pct": 0.08, "source": "test"},
+            alpha={"count24h": 120000, "pct": 6.0},
+            klines=klines_1h,
+            klines_4h=klines_4h,
+            oi={"oi": 200000000, "oi_change_pct": 7.0, "price_change_pct": 8.0},
+            btc_dir="up",
+            missing_fields=[],
+            settings=settings,
+            tradable=True,
+            market_type="cex_perp",
+            mapping_confidence="native",
+            strategy_mode="majors_cex",
+            onchain_data={},
+        )
+        self.assertEqual(result["strategy_mode"], "majors_cex")
+        self.assertGreaterEqual(result["ers"], 68)
+        self.assertGreaterEqual(result["module_scores"]["market_cap_fit"], 6)
+        self.assertIn(result["decision"], {"recommend_paper_trade", "watch_only"})
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ class AssetMapping:
         # Format: onchain_symbol -> {cex_symbol, chain, contract_address, confidence}
         self._verified: dict[str, dict[str, Any]] = {
             # Add known mappings as they are verified
-            # "PEPE": {"gmgn_symbol": "PEPE", "chain": "eth", "address": "0x...", "confidence": "high"},
+            # "PEPE": {"onchain_symbol": "PEPE", "chain": "eth", "address": "0x...", "confidence": "high"},
         }
         # Symbol normalization overrides (common aliases)
         self._aliases: dict[str, str] = {
@@ -51,15 +51,15 @@ class AssetMapping:
         Map an OKX/onchain token to potential Binance/CEX symbols.
         Returns mapping dict with confidence.
         """
-        gmgn_sym = onchain_symbol.upper()
+        normalized_symbol = onchain_symbol.upper()
         cex_list = [s.upper() for s in (cex_symbol_list or [])]
 
         # Direct verified mapping
-        if gmgn_sym in self._verified:
-            v = self._verified[gmgn_sym]
+        if normalized_symbol in self._verified:
+            v = self._verified[normalized_symbol]
             return {
-                "onchain_symbol": gmgn_sym,
-                "cex_symbol": v.get("cex_symbol", gmgn_sym),
+                "onchain_symbol": normalized_symbol,
+                "cex_symbol": v.get("cex_symbol", normalized_symbol),
                 "chain": v.get("chain", chain),
                 "contract_address": v.get("address", contract_address),
                 "confidence": v.get("confidence", self.HIGH),
@@ -67,10 +67,10 @@ class AssetMapping:
             }
 
         # Exact symbol match in CEX list
-        if gmgn_sym in cex_list:
+        if normalized_symbol in cex_list:
             return {
-                "onchain_symbol": gmgn_sym,
-                "cex_symbol": gmgn_sym,
+                "onchain_symbol": normalized_symbol,
+                "cex_symbol": normalized_symbol,
                 "chain": chain,
                 "contract_address": contract_address,
                 "confidence": self.MEDIUM,
@@ -78,10 +78,10 @@ class AssetMapping:
             }
 
         # Alias match
-        if gmgn_sym in self._aliases:
-            alias = self._aliases[gmgn_sym]
+        if normalized_symbol in self._aliases:
+            alias = self._aliases[normalized_symbol]
             return {
-                "onchain_symbol": gmgn_sym,
+                "onchain_symbol": normalized_symbol,
                 "cex_symbol": alias,
                 "chain": chain,
                 "contract_address": contract_address,
@@ -91,10 +91,10 @@ class AssetMapping:
 
         # Fuzzy / partial match (e.g., "PEPE2.0" vs "PEPE")
         for cex_sym in cex_list:
-            if gmgn_sym.startswith(cex_sym) or cex_sym.startswith(gmgn_sym):
+            if normalized_symbol.startswith(cex_sym) or cex_sym.startswith(normalized_symbol):
                 # Too fuzzy — mark as low confidence
                 return {
-                    "onchain_symbol": gmgn_sym,
+                    "onchain_symbol": normalized_symbol,
                     "cex_symbol": cex_sym,
                     "chain": chain,
                     "contract_address": contract_address,
@@ -104,7 +104,7 @@ class AssetMapping:
 
         # No mapping
         return {
-            "onchain_symbol": gmgn_sym,
+            "onchain_symbol": normalized_symbol,
             "cex_symbol": None,
             "chain": chain,
             "contract_address": contract_address,
@@ -125,6 +125,7 @@ class AssetMapping:
                     "symbol": c.symbol,
                     "tradable_on_cex": True,
                     "market_type": getattr(c, "market_type", "cex_perp"),
+                    "strategy_mode": getattr(c, "strategy_mode", "meme_onchain"),
                     "mapping_confidence": "native",
                     "candidate_sources": getattr(c, "candidate_sources", []),
                     "metadata": getattr(c, "metadata", {}),
@@ -146,6 +147,7 @@ class AssetMapping:
                     "symbol": mapping["cex_symbol"] or c.symbol,
                     "tradable_on_cex": True,
                     "market_type": "cex_perp",
+                    "strategy_mode": getattr(c, "strategy_mode", "meme_onchain"),
                     "mapping_confidence": mapping["confidence"],
                     "candidate_sources": getattr(c, "candidate_sources", []),
                     "binance_alpha_symbol": mapping["cex_symbol"],
@@ -157,6 +159,7 @@ class AssetMapping:
                     "symbol": c.symbol,
                     "tradable_on_cex": False,
                     "market_type": getattr(c, "market_type", "layer0_watch"),
+                    "strategy_mode": getattr(c, "strategy_mode", "meme_onchain"),
                     "mapping_confidence": mapping["confidence"],
                     "candidate_sources": getattr(c, "candidate_sources", []),
                     "binance_alpha_symbol": mapping.get("cex_symbol"),

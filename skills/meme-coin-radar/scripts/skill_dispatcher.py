@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-妖币雷达 Phase 2.1 — Skill Dispatcher (P0 改进版)
+妖币雷达 Phase 3.0 — Skill Dispatcher
 改进点:
-  - batch_binance() 增加结构化 fetch_status 收集
-  - OI 返回带显式状态
+  - OKX OnchainOS 作为链上主发现层
+  - Binance Alpha / Futures 作为执行承接层
+  - batch_binance() 返回结构化 fetch_status
 """
 from __future__ import annotations
 
@@ -20,13 +21,7 @@ from providers.binance import (
     futures_ticker,
     open_interest as binance_open_interest,
 )
-from providers.common import FetchStatus, json_out, json_out_safe, load_gmgn_key
-from providers.gmgn import (
-    security_score,
-    signal as gmgn_signal_provider,
-    trenches as gmgn_trenches_provider,
-    trending as gmgn_trending_provider,
-)
+from providers.common import FetchStatus, json_out, json_out_safe
 from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
 from providers.onchainos import (
     hot_tokens as onchainos_hot_tokens_provider,
@@ -160,18 +155,6 @@ def binance_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Option
     return futures_klines(symbol, interval=interval, limit=limit)
 
 
-def gmgn_trending(chain: str = "sol", interval: str = "1h", limit: int = 20) -> list:
-    return gmgn_trending_provider(chain=chain, interval=interval, limit=limit)
-
-
-def gmgn_signal(chain: str = "sol", limit: int = 30) -> list:
-    return gmgn_signal_provider(chain=chain, limit=limit)
-
-
-def gmgn_trenches(chain: str = "sol", token_type: str = "new_creation", limit: int = 20) -> list:
-    return gmgn_trenches_provider(chain=chain, token_type=token_type, limit=limit)
-
-
 def okx_hot_tokens(ranking_type: int = 4, chain: str | None = None, limit: int = 20, time_frame: int = 4) -> list:
     items, _status = onchainos_hot_tokens_provider(
         ranking_type=ranking_type,
@@ -231,10 +214,6 @@ def binance_smartmoney_signals(chain: str = "sol", page: int = 1, page_size: int
     except Exception:
         pass
     return []
-
-
-def gmgn_security_score(token: dict) -> dict:
-    return security_score(token)
 
 
 def _fetch_one_coin(symbol: str) -> tuple:
@@ -316,11 +295,6 @@ __all__ = [
     "binance_klines",
     "binance_smartmoney_signals",
     "binance_ticker",
-    "gmgn_security_score",
-    "gmgn_signal",
-    "gmgn_trending",
-    "gmgn_trenches",
-    "load_gmgn_key",
     "okx_account_equity",
     "okx_btc_status",
     "okx_funding_rate",

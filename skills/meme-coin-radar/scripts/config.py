@@ -61,6 +61,12 @@ class Settings:
     min_recommend_score: float = field(default_factory=lambda: _get_float("RADAR_MIN_RECOMMEND_SCORE", 75.0))
     min_direction_bias: float = field(default_factory=lambda: _get_float("RADAR_MIN_DIRECTION_BIAS", 18.0))
     min_direction_gap: float = field(default_factory=lambda: _get_float("RADAR_MIN_DIRECTION_GAP", 6.0))
+    major_coins: tuple[str, ...] = field(
+        default_factory=lambda: _get_list(
+            "RADAR_MAJOR_COINS",
+            "BTC,ETH,SOL,ZEC,HYPE,BNB,DOGE,AAVE,AVAX,LINK,UNI,ARB,OP,INJ,SEI,TIA,SUI,APT,NEAR,FTM",
+        )
+    )
     key_coins: tuple[str, ...] = field(
         default_factory=lambda: _get_list(
             "RADAR_KEY_COINS",

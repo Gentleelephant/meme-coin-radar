@@ -30,11 +30,6 @@ from radar_logic import build_trade_plan, score_candidate
 from skill_dispatcher import (
     batch_binance,
     binance_alpha,
-    gmgn_security_score,
-    gmgn_signal,
-    gmgn_trending,
-    gmgn_trenches,
-    load_gmgn_key,
     okx_account_equity,
     okx_btc_status,
     okx_hot_tokens,
@@ -92,7 +87,7 @@ def _format_freshness_summary(report: dict) -> str:
     return f"⚠️ {stale_count}/{total_fields} 个数据字段超过 5 分钟阈值，建议复核"
 
 
-print("=== 妖币雷达 Phase 2.0 扫描（Obsidian 对齐版）===")
+print("=== 妖币雷达 Phase 3.0 扫描（OnchainOS + Alpha + Paper Trade）===")
 print(f"时间: {TS}")
 
 # Step 0: BTC 大盘
@@ -116,8 +111,8 @@ print(f"  Alpha: 获取到 {len(alpha_dict)} 个代币的社区数据")
 for sym, data in top_alpha[:5]:
     print(f"    {sym}: tx24h={data['count24h']:,} chg={data['pct']:+.1f}%")
 
-# Step G1/G2: Legacy GMGN + OKX OnchainOS
-print("[G1/G2] OKX OnchainOS / GMGN 链上扫描...")
+# Step G1/G2: OKX OnchainOS
+print("[G1/G2] OKX OnchainOS 链上扫描...")
 okx_hot_trending = okx_hot_tokens(ranking_type=4, chain="solana", limit=20, time_frame=4)
 okx_hot_x = okx_hot_tokens(ranking_type=5, chain="solana", limit=20, time_frame=4)
 okx_signals = okx_signal_list(chain="solana", wallet_type="1,2,3", limit=20)
@@ -131,65 +126,6 @@ print(
     f"  OKX OnchainOS: trending={len(okx_hot_trending)}, "
     f"x_heat={len(okx_hot_x)}, signals={len(okx_signals)}, tracker={len(okx_tracker)}"
 )
-
-# Legacy GMGN kept as supplemental data until reports fully migrate
-gmgn_key_present = bool(load_gmgn_key())
-gmgn_sol_trending = gmgn_trending(chain="sol", interval="1h", limit=20)
-gmgn_bsc_trending = gmgn_trending(chain="bsc", interval="1h", limit=20)
-gmgn_signals = gmgn_signal(chain="sol", limit=30)
-gmgn_trenches_sol = gmgn_trenches(chain="sol", token_type="new_creation", limit=20)
-
-save("05_gmgn_sol_trending.json", json.dumps(gmgn_sol_trending, indent=2, default=str, ensure_ascii=False))
-save("06_gmgn_bsc_trending.json", json.dumps(gmgn_bsc_trending, indent=2, default=str, ensure_ascii=False))
-save("07_gmgn_signals.json", json.dumps(gmgn_signals, indent=2, default=str, ensure_ascii=False))
-save("08_gmgn_trenches_sol.json", json.dumps(gmgn_trenches_sol, indent=2, default=str, ensure_ascii=False))
-
-gmgn_sol_pass = []
-gmgn_sol_reject = []
-for token in gmgn_sol_trending:
-    sec = gmgn_security_score(token)
-    symbol = token.get("symbol", "")
-    if not sec.get("reject"):
-        gmgn_sol_pass.append(
-            {
-                "symbol": symbol,
-                "name": token.get("name", ""),
-                "chain": "sol",
-                "address": token.get("address", ""),
-                "price": float(token.get("price") or 0),
-                "chg1h": float(token.get("price_change_percent1h") or 0),
-                "vol": float(token.get("volume") or 0),
-                "liquidity": float(token.get("liquidity") or 0),
-                "holders": int(token.get("holder_count") or 0),
-                "smart_degen_count": sec.get("smart_degen_count", 0),
-                "renowned_count": sec.get("renowned_count", 0),
-                "rug_ratio": sec.get("rug_ratio"),
-                "top10": sec.get("top_10_holder_rate"),
-                "gmgn_tag": sec.get("tag"),
-                "bonus": sec.get("bonus", 0),
-            }
-        )
-    else:
-        gmgn_sol_reject.append({"symbol": symbol, "reason": sec.get("reason", "")})
-
-gmgn_sm_resonance = sorted(
-    [token for token in gmgn_sol_pass if token["smart_degen_count"] >= 3],
-    key=lambda item: (item["smart_degen_count"], item["chg1h"]),
-    reverse=True,
-)
-print(
-    f"  GMGN SOL: 安全通过={len(gmgn_sol_pass)}, "
-    f"拒绝={len(gmgn_sol_reject)}, 聪明钱共振={len(gmgn_sm_resonance)}"
-)
-
-if not gmgn_key_present:
-    gmgn_status = "missing_key"
-elif gmgn_sol_trending:
-    gmgn_status = "ok"
-elif gmgn_sol_reject:
-    gmgn_status = "all_rejected"
-else:
-    gmgn_status = "fetch_failed"
 
 # Step 0.75: Account equity
 print("[0.75] OKX 账户权益...")
@@ -226,8 +162,7 @@ candidates = discover_candidates(
     okx_tracker_activities=okx_tracker,
     alpha_dict=alpha_dict,
     key_coins=list(SETTINGS.key_coins),
-    gmgn_sol_trending=gmgn_sol_trending,
-    gmgn_bsc_trending=gmgn_bsc_trending,
+    major_coins=list(SETTINGS.major_coins),
 )
 # P0-5: Asset mapping
 cex_symbol_list = [t["symbol"] for t in all_tickers]
@@ -354,7 +289,6 @@ for cand in tradable_candidates:
 
     klines_1d = provider_data.get("klines_1d")
     cand_metadata = cand.get("metadata", {})
-    gmgn_token = cand_metadata.get("gmgn_data", {})
     onchain_data = cand_metadata.get("onchain_data", {})
     # P1-2: Compute relative metrics from history
     rel_metrics = compute_relative_metrics(
@@ -374,8 +308,6 @@ for cand in tradable_candidates:
         btc_dir=btc_dir,
         missing_fields=[],
         settings=SETTINGS,
-        gmgn_token=gmgn_token,
-        gmgn_security_score_fn=gmgn_security_score,
         klines_4h=klines_4h,
         klines_1d=klines_1d,
         oi=oi,
@@ -384,6 +316,7 @@ for cand in tradable_candidates:
         tradable=cand.get("tradable_on_cex", True),
         market_type=cand.get("market_type", "cex_perp"),
         mapping_confidence=cand.get("mapping_confidence", "native"),
+        strategy_mode=cand.get("strategy_mode", "meme_onchain"),
         onchain_data=onchain_data,
     )
     result["name"] = coin
@@ -400,7 +333,6 @@ for cand in tradable_candidates:
 for cand in onchain_candidates[:10]:  # Limit to top 10 onchain
     coin = cand.get("symbol", "")
     cand_metadata = cand.get("metadata", {})
-    gmgn_token = cand_metadata.get("gmgn_data", {})
     onchain_data = cand_metadata.get("onchain_data", {})
     result = score_candidate(
         symbol=coin,
@@ -411,11 +343,10 @@ for cand in onchain_candidates[:10]:  # Limit to top 10 onchain
         btc_dir=btc_dir,
         missing_fields=["atr14", "trend", "oi", "fundingRate", "volume"],
         settings=SETTINGS,
-        gmgn_token=gmgn_token,
-        gmgn_security_score_fn=gmgn_security_score,
         tradable=False,
         market_type=cand.get("market_type", "layer0_watch"),
         mapping_confidence=cand.get("mapping_confidence", "none"),
+        strategy_mode=cand.get("strategy_mode", "meme_onchain"),
         onchain_data=onchain_data,
     )
     result["name"] = coin
@@ -675,7 +606,7 @@ for item in scored:
 
 save("result.json", json.dumps(json_results, indent=2, ensure_ascii=False, default=str))
 
-print("=== 妖币雷达 Phase 2.0 扫描完成 ===")
+print("=== 妖币雷达 Phase 3.0 扫描完成 ===")
 print(f"目录: {SCAN_DIR}")
 print(f"报告: {report_path}")
 print(f"JSON: {SCAN_DIR / 'result.json'}")
@@ -683,12 +614,8 @@ print("")
 print("🏆 机会队列 TOP" + str(len(top_candidates)) + ":")
 for index, item in enumerate(top_candidates[: SETTINGS.top_n]):
     direction_emoji = "🟢" if item["direction"] == "long" else "🔴"
-    gmgn_tag = (item["meta"].get("gmgn") or {}).get("gmgn_tag", "")
-    tag_suffix = f" [{gmgn_tag}]" if gmgn_tag and gmgn_tag != "⚪ 无GMGN数据" else ""
     decision_label = "纸面交易" if item["decision"] == "recommend_paper_trade" else ("观察" if item["decision"] == "watch_only" else "复核")
     print(
         f"  {MEDALS[index]} {item['name']} {direction_emoji}{item['direction']} "
-        f"评分:{item['total']} conf:{item['confidence']:.0f} {item['grade_label']} [{decision_label}]{tag_suffix}"
+        f"评分:{item['total']} conf:{item['confidence']:.0f} {item['grade_label']} [{decision_label}]"
     )
-if gmgn_sm_resonance:
-    print(f"🚀 GMGN 聪明钱共振: {', '.join(token['symbol'] for token in gmgn_sm_resonance[:5])}")
