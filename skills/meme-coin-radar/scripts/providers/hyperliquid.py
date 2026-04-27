@@ -156,6 +156,7 @@ def klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[list]
                 float(str(item.get("l", "0"))),
                 float(str(item.get("c", "0"))),
                 float(str(item.get("v", "0"))),
+                int(item.get("t", 0) or 0),
             ))
         except (ValueError, TypeError):
             continue

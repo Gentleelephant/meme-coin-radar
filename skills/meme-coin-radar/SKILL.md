@@ -114,6 +114,35 @@ python3 skills/meme-coin-radar/scripts/auto-run.py
 - `09_fetch_status.json`
 - `10_data_freshness.json`
 - `11_onchain_snapshots.json`
+- `12_execution_results.json`（启用自动模拟下单时）
+
+## 模拟交易执行
+
+当前支持把 `recommend_paper_trade` 候选直接转成 Binance 风格的 bracket 订单计划：
+
+- 主单
+- 止损单
+- 分批止盈单
+
+默认是安全模式：
+
+- `RADAR_EXECUTION_MODE=paper`
+- `RADAR_AUTO_EXECUTE_PAPER_TRADES=false`
+
+可选开关：
+
+- `RADAR_AUTO_EXECUTE_PAPER_TRADES=true`
+  启用后，会把推荐标的写入本地 `paper_positions.json`，作为模拟持仓簿。
+- `RADAR_VALIDATE_ORDERS_WITH_BINANCE=true`
+  启用后，会用 Binance skill 的 `futures-usds test-order` 规则对主单、止损、止盈做预校验。
+
+当前约定：
+
+- 主单优先使用 `MARKET` 或 `LIMIT`
+- 止损使用 `STOP_MARKET`
+- 止盈使用 `TAKE_PROFIT_MARKET`
+- 保护单默认带 `reduce_only=true`
+- 触发价格默认使用 `MARK_PRICE`
 
 ## 代码结构
 

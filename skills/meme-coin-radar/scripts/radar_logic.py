@@ -260,6 +260,8 @@ def build_trade_plan(
     # Position sizing per Obsidian formula
     position_size_usd: float | None = None
     position_text = result.get("position_size", "不建议开仓")
+    leverage = 1
+    quantity = None
     if equity > 0 and risk_distance > 0:
         total_score = result.get("final_score", result.get("total", 0))
         risk_ratio = 0.03 if total_score >= 85 else (0.02 if total_score >= 75 else 0.01)
@@ -272,7 +274,10 @@ def build_trade_plan(
         else:
             position_size_usd = round(position_size_usd, 1)
         coins = position_size_usd / price if price > 0 else 0
+        quantity = coins
         position_text = f"建议开仓 ${position_size_usd:,.0f} USDT（约 {coins:.2f} 个币）@ {leverage}x 杠杆"
+    elif price > 0:
+        quantity = 0.0
 
     quality_flags = []
     if meta.get("fr", 0) == 0:
@@ -283,6 +288,12 @@ def build_trade_plan(
         quality_flags.append("no_alpha")
     if result.get("needs_manual_review"):
         quality_flags.append("needs_review")
+
+    symbol = str(result.get("symbol") or "").upper()
+    entry_side = "BUY" if direction == "long" else "SELL"
+    exit_side = "SELL" if direction == "long" else "BUY"
+    quantity = quantity if quantity is not None else (position_size_usd / price if position_size_usd and price > 0 else 0.0)
+    split_quantity = quantity / 2 if quantity else 0.0
 
     return {
         "setup_label": setup_label,
@@ -295,6 +306,51 @@ def build_trade_plan(
         "rr": round(rr, 2),
         "position_size_usd": position_size_usd,
         "quality_flags": quality_flags,
+        "execution": {
+            "symbol": f"{symbol}USDT" if symbol else "",
+            "entry_side": entry_side,
+            "exit_side": exit_side,
+            "leverage": leverage,
+            "quantity": quantity,
+            "entry_price": mid_entry,
+            "entry_order": {
+                "side": entry_side,
+                "type": "MARKET" if result.get("can_enter") else "LIMIT",
+                "price": None if result.get("can_enter") else mid_entry,
+                "time_in_force": None if result.get("can_enter") else "GTC",
+            },
+            "stop_loss": stop_loss,
+            "stop_loss_order": {
+                "side": exit_side,
+                "type": "STOP_MARKET",
+                "stop_price": stop_loss,
+                "reduce_only": True,
+                "working_type": "MARK_PRICE",
+                "price_protect": True,
+            },
+            "take_profit_orders": [
+                {
+                    "side": exit_side,
+                    "type": "TAKE_PROFIT_MARKET",
+                    "stop_price": take_profit_1,
+                    "quantity": split_quantity if split_quantity else quantity,
+                    "fraction": 0.5,
+                    "reduce_only": True,
+                    "working_type": "MARK_PRICE",
+                    "price_protect": True,
+                },
+                {
+                    "side": exit_side,
+                    "type": "TAKE_PROFIT_MARKET",
+                    "stop_price": take_profit_2,
+                    "quantity": split_quantity if split_quantity else quantity,
+                    "fraction": 0.5,
+                    "reduce_only": True,
+                    "working_type": "MARK_PRICE",
+                    "price_protect": True,
+                },
+            ],
+        },
     }
 
 # ────────────────────────────────────────────────
@@ -502,7 +558,7 @@ def score_candidate(
 
     if volume_vs_7d is None and klines_1d and len(klines_1d) >= 8:
         try:
-            vols = [float(k[5]) for k in klines_1d[-8:]]
+            vols = [float(k[4]) for k in klines_1d[-8:]]
             if len(vols) >= 8 and vols[-1] > 0:
                 avg_7d = sum(vols[:-1]) / 7
                 if avg_7d > 0:

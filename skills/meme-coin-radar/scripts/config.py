@@ -24,6 +24,13 @@ def _get_int(name: str, default: int) -> int:
     return int(raw.strip())
 
 
+def _get_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_list(name: str, default: str) -> tuple[str, ...]:
     raw = _get_env(name, default)
     return tuple(part.strip().upper() for part in raw.split(",") if part.strip())
@@ -61,6 +68,9 @@ class Settings:
     min_recommend_score: float = field(default_factory=lambda: _get_float("RADAR_MIN_RECOMMEND_SCORE", 75.0))
     min_direction_bias: float = field(default_factory=lambda: _get_float("RADAR_MIN_DIRECTION_BIAS", 18.0))
     min_direction_gap: float = field(default_factory=lambda: _get_float("RADAR_MIN_DIRECTION_GAP", 6.0))
+    execution_mode: str = field(default_factory=lambda: _get_env("RADAR_EXECUTION_MODE", "paper"))
+    auto_execute_paper_trades: bool = field(default_factory=lambda: _get_bool("RADAR_AUTO_EXECUTE_PAPER_TRADES", False))
+    validate_orders_with_binance: bool = field(default_factory=lambda: _get_bool("RADAR_VALIDATE_ORDERS_WITH_BINANCE", False))
     major_coins: tuple[str, ...] = field(
         default_factory=lambda: _get_list(
             "RADAR_MAJOR_COINS",

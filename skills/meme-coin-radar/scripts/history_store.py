@@ -196,3 +196,116 @@ def cleanup_old_snapshots(output_dir: Path, keep_days: int = 30) -> int:
         except (ValueError, OSError):
             continue
     return removed
+
+
+def paper_positions_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_positions.json"
+
+
+def load_paper_positions(output_dir: Path) -> dict[str, Any]:
+    path = paper_positions_path(output_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_paper_positions(output_dir: Path, positions: dict[str, Any]) -> Path:
+    path = paper_positions_path(output_dir)
+    path.write_text(json.dumps(positions, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def paper_orders_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_orders.json"
+
+
+def load_paper_orders(output_dir: Path) -> dict[str, Any]:
+    path = paper_orders_path(output_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_paper_orders(output_dir: Path, orders: dict[str, Any]) -> Path:
+    path = paper_orders_path(output_dir)
+    path.write_text(json.dumps(orders, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def paper_account_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_account.json"
+
+
+def load_paper_account(output_dir: Path) -> dict[str, Any]:
+    path = paper_account_path(output_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_paper_account(output_dir: Path, account: dict[str, Any]) -> Path:
+    path = paper_account_path(output_dir)
+    path.write_text(json.dumps(account, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def paper_metrics_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_metrics.json"
+
+
+def save_paper_metrics(output_dir: Path, metrics: dict[str, Any]) -> Path:
+    path = paper_metrics_path(output_dir)
+    path.write_text(json.dumps(metrics, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def paper_events_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_events.jsonl"
+
+
+def append_paper_event(output_dir: Path, event: dict[str, Any]) -> Path:
+    path = paper_events_path(output_dir)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, default=str, ensure_ascii=False) + "\n")
+    return path
+
+
+def paper_closed_positions_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_closed_positions.jsonl"
+
+
+def append_closed_position(output_dir: Path, position: dict[str, Any]) -> Path:
+    path = paper_closed_positions_path(output_dir)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(position, default=str, ensure_ascii=False) + "\n")
+    return path
+
+
+def load_closed_positions(output_dir: Path) -> list[dict[str, Any]]:
+    path = paper_closed_positions_path(output_dir)
+    if not path.exists():
+        return []
+    results: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+            if isinstance(item, dict):
+                results.append(item)
+        except json.JSONDecodeError:
+            continue
+    return results

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
+import shlex
 import time
 
 from typing import Any, Optional
 
 from . import hyperliquid
-from .common import FetchStatus, http_json, http_json_safe, json_out, json_out_safe
+from .common import FetchStatus, http_json, http_json_safe, json_out, json_out_safe, run
 
 # Official Binance skill references:
 BINANCE_ALPHA_TOKEN_LIST_CMD = "npx -y @binance/binance-cli alpha token-list --json"
@@ -18,6 +20,7 @@ BINANCE_FUTURES_FUNDING_INFO_CMD = (
 BINANCE_FUTURES_KLINES_CMD = (
     "npx -y @binance/binance-cli futures-usds kline-candlestick-data --symbol {symbol}USDT --interval {interval} --limit {limit} --json"
 )
+BINANCE_FUTURES_ORDER_BASE = ["npx", "-y", "@binance/binance-cli", "futures-usds"]
 
 _FUNDING_INFO_CACHE: dict | list | None = None
 _FUNDING_CACHE_TTL_SECONDS = 900  # 15 minutes
@@ -156,6 +159,7 @@ def futures_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Option
                     float(item[3]),
                     float(item[4]),
                     float(item[5]),
+                    int(item[0]),
                 ))
             except (ValueError, TypeError):
                 continue
@@ -214,3 +218,68 @@ def open_interest(symbol: str) -> dict[str, Any]:
         "status": status.to_dict(),
         "error_type": None,
     }
+
+
+def futures_exchange_info(symbol: str) -> Optional[dict[str, Any]]:
+    data, status = http_json_safe(
+        f"https://fapi.binance.com/fapi/v1/exchangeInfo?symbol={symbol.upper()}USDT",
+        timeout=10,
+        source="binance-exchangeInfo",
+    )
+    if not status.ok or not isinstance(data, dict):
+        return None
+    symbols = data.get("symbols", [])
+    if not isinstance(symbols, list) or not symbols:
+        return None
+    item = symbols[0] if isinstance(symbols[0], dict) else None
+    if not item:
+        return None
+    filters = {}
+    for row in item.get("filters", []):
+        if isinstance(row, dict) and row.get("filterType"):
+            filters[str(row["filterType"])] = row
+    return {
+        "symbol": item.get("symbol", ""),
+        "pricePrecision": item.get("pricePrecision"),
+        "quantityPrecision": item.get("quantityPrecision"),
+        "filters": filters,
+        "raw": item,
+    }
+
+
+def _build_futures_order_command(endpoint: str, **params: Any) -> str:
+    parts = [*BINANCE_FUTURES_ORDER_BASE, endpoint]
+    for key, value in params.items():
+        if value in (None, ""):
+            continue
+        flag = f"--{key.replace('_', '-')}"
+        parts.append(flag)
+        parts.append(str(value).lower() if isinstance(value, bool) else str(value))
+    parts.append("--json")
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _run_order_command(endpoint: str, **params: Any) -> dict[str, Any]:
+    command = _build_futures_order_command(endpoint, **params)
+    raw = run(command, timeout=30)
+    if not raw:
+        return {"ok": True, "endpoint": endpoint, "command": command, "response": {}}
+    if raw.startswith("[ERROR]"):
+        return {"ok": False, "endpoint": endpoint, "command": command, "error": raw.replace("[ERROR] ", "")}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = {"raw": raw}
+    return {"ok": True, "endpoint": endpoint, "command": command, "response": parsed}
+
+
+def futures_test_order(**params: Any) -> dict[str, Any]:
+    return _run_order_command("test-order", **params)
+
+
+def futures_new_order(**params: Any) -> dict[str, Any]:
+    return _run_order_command("new-order", **params)
+
+
+def futures_new_algo_order(**params: Any) -> dict[str, Any]:
+    return _run_order_command("new-algo-order", **params)

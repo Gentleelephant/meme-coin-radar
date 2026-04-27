@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from scripts.config import Settings
+from scripts.execution_binance import execute_paper_bracket
+from scripts.paper_reconciler import PriceTick, reconcile_all_positions
 from scripts.radar_logic import build_trade_plan, calc_trend_structure, score_candidate
 
 
@@ -35,6 +39,8 @@ class RadarLogicTest(unittest.TestCase):
         # R:R should be computed and reasonable with midpoint entry
         self.assertGreater(plan["rr"], 1.0)
         self.assertEqual(plan["setup_label"], "ready")
+        self.assertIn("execution", plan)
+        self.assertEqual(plan["execution"]["entry_order"]["type"], "MARKET")
 
     def test_build_trade_plan_rr_downgrade(self) -> None:
         # Simulated scenario where R:R is explicitly bad (<1.5)
@@ -280,6 +286,101 @@ class RadarLogicTest(unittest.TestCase):
         self.assertGreaterEqual(result["ers"], 68)
         self.assertGreaterEqual(result["module_scores"]["market_cap_fit"], 6)
         self.assertIn(result["decision"], {"recommend_paper_trade", "watch_only"})
+
+    def test_execute_paper_bracket_creates_protected_orders(self) -> None:
+        output_dir = Path(tempfile.mkdtemp(prefix="radar-paper-"))
+        result = {
+            "symbol": "SOL",
+            "decision": "recommend_paper_trade",
+            "direction": "long",
+            "strategy_mode": "majors_cex",
+            "trade_plan": {
+                "execution": {
+                    "symbol": "SOLUSDT",
+                    "quantity": 2.4,
+                    "entry_price": 180.0,
+                    "entry_order": {"side": "BUY", "type": "MARKET", "price": None, "time_in_force": None},
+                    "stop_loss_order": {
+                        "side": "SELL",
+                        "type": "STOP_MARKET",
+                        "stop_price": 171.0,
+                        "reduce_only": True,
+                        "working_type": "MARK_PRICE",
+                        "price_protect": True,
+                    },
+                    "take_profit_orders": [
+                        {"side": "SELL", "type": "TAKE_PROFIT_MARKET", "stop_price": 190.0, "quantity": 1.2, "reduce_only": True, "working_type": "MARK_PRICE", "price_protect": True},
+                        {"side": "SELL", "type": "TAKE_PROFIT_MARKET", "stop_price": 198.0, "quantity": 1.2, "reduce_only": True, "working_type": "MARK_PRICE", "price_protect": True},
+                    ],
+                }
+            },
+        }
+        execution = execute_paper_bracket(
+            result,
+            output_dir=output_dir,
+            execution_mode="paper",
+            validate_with_binance=False,
+            exchange_info_fetcher=lambda _symbol: None,
+        )
+        self.assertEqual(execution["status"], "PENDING")
+        self.assertTrue(execution["protected"])
+        self.assertEqual(execution["entry_order"]["side"], "BUY")
+        self.assertEqual(execution["stop_loss_order"]["side"], "SELL")
+        self.assertEqual(len(execution["take_profit_orders"]), 2)
+
+    def test_reconcile_position_hits_take_profit_and_updates_metrics(self) -> None:
+        output_dir = Path(tempfile.mkdtemp(prefix="radar-reconcile-"))
+        result = {
+            "symbol": "SOL",
+            "decision": "recommend_paper_trade",
+            "direction": "long",
+            "strategy_mode": "majors_cex",
+            "candidate_sources": ["alpha_hot", "key_coins"],
+            "oos": 72,
+            "ers": 74,
+            "final_score": 73,
+            "trade_plan": {
+                "execution": {
+                    "symbol": "SOLUSDT",
+                    "leverage": 3,
+                    "quantity": 2.0,
+                    "entry_price": 100.0,
+                    "stop_loss": 95.0,
+                    "entry_order": {"side": "BUY", "type": "MARKET", "price": None, "time_in_force": None},
+                    "stop_loss_order": {
+                        "side": "SELL",
+                        "type": "STOP_MARKET",
+                        "stop_price": 95.0,
+                        "reduce_only": True,
+                        "working_type": "MARK_PRICE",
+                        "price_protect": True,
+                    },
+                    "take_profit_orders": [
+                        {"side": "SELL", "type": "TAKE_PROFIT_MARKET", "stop_price": 105.0, "quantity": 1.0, "reduce_only": True, "working_type": "MARK_PRICE", "price_protect": True},
+                        {"side": "SELL", "type": "TAKE_PROFIT_MARKET", "stop_price": 108.0, "quantity": 1.0, "reduce_only": True, "working_type": "MARK_PRICE", "price_protect": True},
+                    ],
+                }
+            },
+        }
+        execute_paper_bracket(
+            result,
+            output_dir=output_dir,
+            execution_mode="paper",
+            validate_with_binance=False,
+            exchange_info_fetcher=lambda _symbol: None,
+        )
+        tick_map = {
+            "SOLUSDT": [
+                PriceTick(open=100.0, high=103.0, low=99.0, close=102.0, volume=1000.0, timestamp=1),
+                PriceTick(open=102.0, high=106.0, low=101.0, close=105.0, volume=1000.0, timestamp=2),
+                PriceTick(open=105.0, high=109.0, low=104.0, close=108.0, volume=1000.0, timestamp=3),
+            ]
+        }
+        reconciled = reconcile_all_positions(output_dir, tick_map=tick_map)
+        self.assertEqual(reconciled["closed_positions"], 1)
+        self.assertEqual(reconciled["metrics"]["total_trades"], 1)
+        self.assertGreater(reconciled["metrics"]["raw_win_rate"], 0.0)
+        self.assertGreater(reconciled["metrics"]["tp1_hit_rate"], 0.0)
 
 
 if __name__ == "__main__":

@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-妖币雷达 Phase 2.0 — Provider + Radar Logic 版 (Obsidian-aligned)
+妖币雷达 Phase 3.0 — OnchainOS + Alpha + Paper Trade 执行版
 用法: python3 scripts/auto-run.py
 数据输出: $XDG_STATE_HOME/meme-coin-radar/scan_YYYYMMDD_HHMMSS/
          或 ~/.local/state/meme-coin-radar/scan_YYYYMMDD_HHMMSS/
          若不可写则回退到系统临时目录
 
 改进点:
-  - Obsidian 五大模块评分 (25/30/20/15/10)
-  - 7条硬否决规则扩展
-  - OI四象限 + 资金费率合并到链上模块
-  - 双周期验证 (4H + 1H)
-  - R:R >= 1.5 校验
-  - 精确仓位计算 (基于账户权益)
-  - 标准 JSON 输出
+  - OKX OnchainOS 主发现 + Binance Alpha/Execution 承接
+  - OOS + ERS 双轴评分
+  - 主流币 majors_cex 模式
+  - Paper bracket orders（主单 + TP + SL）
+  - 可选 Binance test-order 预校验
 """
 
 from __future__ import annotations
@@ -22,10 +20,12 @@ import json
 import os
 from datetime import datetime
 
-from history_store import cleanup_old_snapshots, compute_relative_metrics, save_alpha_snapshot, save_ticker_snapshot
+from history_store import cleanup_old_snapshots, compute_relative_metrics, load_paper_positions, save_alpha_snapshot, save_ticker_snapshot
 from config import ensure_output_dir, load_settings
 from asset_mapping import apply_to_candidates
 from candidate_discovery import discover_candidates, get_cex_symbols, prioritize_candidates
+from execution_binance import execute_paper_bracket
+from paper_reconciler import compute_metrics, reconcile_all_positions, ticks_from_klines
 from radar_logic import build_trade_plan, score_candidate
 from skill_dispatcher import (
     batch_binance,
@@ -155,6 +155,8 @@ if all_tickers:
 
 # Step 2: Unified candidate discovery (roadmap P0-3)
 print("[2] 候选发现层...")
+existing_positions = load_paper_positions(DATA_DIR)
+existing_position_symbols = list(existing_positions.keys())
 candidates = discover_candidates(
     okx_hot_tokens=okx_hot_trending,
     okx_x_tokens=okx_hot_x,
@@ -187,7 +189,7 @@ tradable_candidates = [c for c in enriched_candidates if c.get("tradable_on_cex"
 onchain_candidates = [c for c in enriched_candidates if not c.get("tradable_on_cex")]
 cex_symbols = get_cex_symbols(candidates)  # native tradable symbols from discovery layer
 mapped_cex_symbols = [c.get("symbol") for c in tradable_candidates if c.get("symbol")]
-cex_symbols = list(dict.fromkeys(cex_symbols + mapped_cex_symbols))
+cex_symbols = list(dict.fromkeys(cex_symbols + mapped_cex_symbols + existing_position_symbols))
 
 print(f"  发现候选: CEX可交易={len(tradable_candidates)}, 链上观察={len(onchain_candidates)}")
 
@@ -267,6 +269,23 @@ freshness_report = _data_freshness_report(fetch_status, scan_ts)
 save("10_data_freshness.json", json.dumps(freshness_report, indent=2, default=str, ensure_ascii=False))
 freshness_summary = _format_freshness_summary(freshness_report)
 print(f"  {freshness_summary}")
+
+# Step 2c: Reconcile existing paper positions
+reconcile_result = None
+paper_metrics = None
+if existing_position_symbols:
+    print(f"[2c] Reconcile 模拟持仓 ({len(existing_position_symbols)} symbols)...")
+    tick_map = {
+        symbol: ticks_from_klines((bnc_results.get(symbol) or {}).get("klines"))
+        for symbol in existing_position_symbols
+    }
+    reconcile_result = reconcile_all_positions(DATA_DIR, tick_map=tick_map)
+    paper_metrics = reconcile_result.get("metrics")
+    save("13_reconcile_result.json", json.dumps(reconcile_result, indent=2, default=str, ensure_ascii=False))
+    print(
+        f"  reconcile: updated={reconcile_result.get('updated_positions', 0)}, "
+        f"closed={reconcile_result.get('closed_positions', 0)}"
+    )
 
 # Step 3: 评分
 print("[3] Obsidian 五大模块评分...")
@@ -389,6 +408,39 @@ elif top_watch:
         + "。"
     )
 
+execution_results = []
+execution_mode = SETTINGS.execution_mode
+if SETTINGS.auto_execute_paper_trades and recommendations:
+    print(f"[4] 创建模拟交易订单... mode={execution_mode}")
+    for item in recommendations:
+        execution_result = execute_paper_bracket(
+            item,
+            output_dir=DATA_DIR,
+            execution_mode=execution_mode,
+            validate_with_binance=SETTINGS.validate_orders_with_binance,
+        )
+        item["execution_result"] = execution_result
+        execution_results.append(execution_result)
+        print(f"  {item['name']}: {execution_result.get('status')}")
+    save("12_execution_results.json", json.dumps(execution_results, indent=2, default=str, ensure_ascii=False))
+elif recommendations:
+    for item in recommendations:
+        item["execution_result"] = {
+            "status": "not_executed",
+            "mode": execution_mode,
+            "reason": "RADAR_AUTO_EXECUTE_PAPER_TRADES disabled",
+        }
+
+if paper_metrics is None:
+    paper_metrics = compute_metrics(DATA_DIR, reconcile_result.get("account", {}) if reconcile_result else {}, load_paper_positions(DATA_DIR))
+save("14_paper_metrics.json", json.dumps(paper_metrics, indent=2, default=str, ensure_ascii=False))
+
+if paper_metrics and paper_metrics.get("total_trades", 0) > 0:
+    summary_lines.append(
+        f"- 模拟盘累计 `{paper_metrics['total_trades']}` 笔，胜率 `{paper_metrics['raw_win_rate']*100:.1f}%`，"
+        f" TP1 命中率 `{paper_metrics['tp1_hit_rate']*100:.1f}%`。"
+    )
+
 watch_only_items = [item for item in valid if item["decision"] == "watch_only"][:5]
 manual_review_items = [item for item in valid if item["decision"] == "manual_review"][:5]
 
@@ -445,6 +497,43 @@ if recommendations:
 else:
     report_lines += [
         "> ⚠️ 本次没有满足 `recommend_paper_trade` 门槛的标的。",
+        "",
+    ]
+
+if recommendations:
+    report_lines += [
+        "## 🧾 Paper Orders",
+        "",
+        "| 币种 | 模式 | 状态 | 主单 | 止损 | 止盈 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for item in recommendations:
+        execution = item.get("execution_result") or {}
+        plan = item.get("trade_plan") or {}
+        intent = (plan.get("execution") or {})
+        entry_type = ((intent.get("entry_order") or {}).get("type")) or "N/A"
+        tp_orders = execution.get("take_profit_orders") or (intent.get("take_profit_orders") or [])
+        tp_summary = ", ".join(f"${order.get('stop_price', 0):.6g}" for order in tp_orders[:2]) if tp_orders else "—"
+        report_lines.append(
+            f"| **{item['name']}** | {execution.get('mode', execution_mode)} | {execution.get('status', 'pending')} | "
+            f"{entry_type} | ${((execution.get('stop_loss_order') or (intent.get('stop_loss_order') or {})).get('stop_price', 0)):.6g} | {tp_summary} |"
+        )
+    report_lines.append("")
+
+if paper_metrics:
+    report_lines += [
+        "## 📈 Paper Metrics",
+        "",
+        "| 指标 | 数值 |",
+        "|---|---:|",
+        f"| Closed Trades | {paper_metrics.get('total_trades', 0)} |",
+        f"| Raw Win Rate | {paper_metrics.get('raw_win_rate', 0.0) * 100:.1f}% |",
+        f"| TP1 Hit Rate | {paper_metrics.get('tp1_hit_rate', 0.0) * 100:.1f}% |",
+        f"| Full TP Rate | {paper_metrics.get('full_tp_rate', 0.0) * 100:.1f}% |",
+        f"| Stop Loss Rate | {paper_metrics.get('stop_loss_rate', 0.0) * 100:.1f}% |",
+        f"| Profit Factor | {paper_metrics.get('profit_factor') if paper_metrics.get('profit_factor') is not None else 'N/A'} |",
+        f"| Net PnL | {paper_metrics.get('net_pnl', 0.0):.2f} |",
+        f"| Open Positions | {paper_metrics.get('open_positions', 0)} |",
         "",
     ]
 
@@ -602,6 +691,7 @@ for item in scored:
             k: v for k, v in (plan or {}).items()
             if k not in ("entry_low", "entry_high", "stop_loss", "take_profit_1", "take_profit_2")
         } if plan else None,
+        "execution_result": item.get("execution_result"),
     })
 
 save("result.json", json.dumps(json_results, indent=2, ensure_ascii=False, default=str))

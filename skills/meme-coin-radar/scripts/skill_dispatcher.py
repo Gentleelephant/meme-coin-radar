@@ -14,22 +14,48 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from typing import Any, Optional
 
-from providers.binance import (
-    alpha_token_list,
-    futures_funding,
-    futures_klines,
-    futures_ticker,
-    open_interest as binance_open_interest,
-)
-from providers.common import FetchStatus, json_out, json_out_safe
-from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
-from providers.onchainos import (
-    hot_tokens as onchainos_hot_tokens_provider,
-    signal_list as onchainos_signal_list_provider,
-    token_snapshot as onchainos_token_snapshot_provider,
-    tracker_activities as onchainos_tracker_activities_provider,
-)
-from providers.okx import account_equity as okx_account_equity_impl
+try:
+    from .providers.binance import (
+        alpha_token_list,
+        futures_exchange_info,
+        futures_funding,
+        futures_klines,
+        futures_new_algo_order,
+        futures_new_order,
+        futures_test_order,
+        futures_ticker,
+        open_interest as binance_open_interest,
+    )
+    from .providers.common import FetchStatus, json_out, json_out_safe
+    from .providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
+    from .providers.onchainos import (
+        hot_tokens as onchainos_hot_tokens_provider,
+        signal_list as onchainos_signal_list_provider,
+        token_snapshot as onchainos_token_snapshot_provider,
+        tracker_activities as onchainos_tracker_activities_provider,
+    )
+    from .providers.okx import account_equity as okx_account_equity_impl
+except ImportError:
+    from providers.binance import (
+        alpha_token_list,
+        futures_exchange_info,
+        futures_funding,
+        futures_klines,
+        futures_new_algo_order,
+        futures_new_order,
+        futures_test_order,
+        futures_ticker,
+        open_interest as binance_open_interest,
+    )
+    from providers.common import FetchStatus, json_out, json_out_safe
+    from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
+    from providers.onchainos import (
+        hot_tokens as onchainos_hot_tokens_provider,
+        signal_list as onchainos_signal_list_provider,
+        token_snapshot as onchainos_token_snapshot_provider,
+        tracker_activities as onchainos_tracker_activities_provider,
+    )
+    from providers.okx import account_equity as okx_account_equity_impl
 
 BATCH_WORKERS = 12
 BATCH_TIMEOUT_SECONDS = 60
@@ -153,6 +179,22 @@ def binance_funding(symbol: str) -> Optional[dict]:
 
 def binance_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[list]:
     return futures_klines(symbol, interval=interval, limit=limit)
+
+
+def binance_exchange_info(symbol: str) -> Optional[dict]:
+    return futures_exchange_info(symbol)
+
+
+def binance_test_order(**params: Any) -> dict[str, Any]:
+    return futures_test_order(**params)
+
+
+def binance_new_order(**params: Any) -> dict[str, Any]:
+    return futures_new_order(**params)
+
+
+def binance_new_algo_order(**params: Any) -> dict[str, Any]:
+    return futures_new_algo_order(**params)
 
 
 def okx_hot_tokens(ranking_type: int = 4, chain: str | None = None, limit: int = 20, time_frame: int = 4) -> list:
@@ -291,9 +333,13 @@ def batch_binance(coins: list) -> dict:
 __all__ = [
     "batch_binance",
     "binance_alpha",
+    "binance_exchange_info",
     "binance_funding",
     "binance_klines",
+    "binance_new_algo_order",
+    "binance_new_order",
     "binance_smartmoney_signals",
+    "binance_test_order",
     "binance_ticker",
     "okx_account_equity",
     "okx_btc_status",
