@@ -83,6 +83,47 @@ def save_alpha_snapshot(
     return path
 
 
+def save_social_snapshot(
+    output_dir: Path,
+    social_intel: dict[str, dict[str, Any]],
+    timestamp_label: str | None = None,
+) -> Path:
+    hdir = history_dir(output_dir)
+    stamp = timestamp_label or datetime.now().strftime("%Y%m%d%H")
+    path = hdir / f"social_{stamp}.json"
+    snapshot = {
+        "timestamp": stamp,
+        "count": len(social_intel),
+        "data": social_intel,
+    }
+    path.write_text(json.dumps(snapshot, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def load_recent_social_snapshot(
+    output_dir: Path,
+    symbol: str,
+    hours_back: int,
+    before_ts: datetime | None = None,
+) -> dict[str, Any] | None:
+    hdir = history_dir(output_dir)
+    symbol = symbol.upper()
+    anchor = before_ts or datetime.now()
+    for hour in range(hours_back, hours_back + 24):
+        stamp = (anchor - timedelta(hours=hour)).strftime("%Y%m%d%H")
+        path = hdir / f"social_{stamp}.json"
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            entry = data.get("data", {}).get(symbol)
+            if isinstance(entry, dict):
+                return entry
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 def load_ticker_history(
     output_dir: Path,
     symbol: str,
@@ -269,6 +310,17 @@ def save_paper_metrics(output_dir: Path, metrics: dict[str, Any]) -> Path:
     path = paper_metrics_path(output_dir)
     path.write_text(json.dumps(metrics, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def load_paper_metrics(output_dir: Path) -> dict[str, Any]:
+    path = paper_metrics_path(output_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 def paper_events_path(output_dir: Path) -> Path:

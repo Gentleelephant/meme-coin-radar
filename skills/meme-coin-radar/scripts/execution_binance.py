@@ -78,6 +78,12 @@ def _build_validation_orders(execution: dict[str, Any]) -> list[tuple[str, dict[
     return items
 
 
+def _has_required_protection(plan: dict[str, Any]) -> bool:
+    stop_loss = plan.get("stop_loss_order") or {}
+    take_profits = plan.get("take_profit_orders") or []
+    return bool(stop_loss.get("stop_price")) and len(take_profits) >= 1
+
+
 def execute_paper_bracket(
     result: dict[str, Any],
     output_dir,
@@ -122,6 +128,17 @@ def execute_paper_bracket(
         "stop_price": stop_price,
         "quantity": quantity,
     }
+    if plan.get("protection_required") and not _has_required_protection({
+        "stop_loss_order": stop_loss_order,
+        "take_profit_orders": tp_orders,
+    }):
+        return {
+            "symbol": symbol,
+            "status": "rejected_unprotected",
+            "reason": "protection_required_but_incomplete",
+            "protected": False,
+            "mode": execution_mode,
+        }
 
     validation: dict[str, Any] = {}
     if validate_with_binance and execution_mode in {"paper_validate", "binance_live"}:
@@ -137,6 +154,8 @@ def execute_paper_bracket(
                 "quantity": order.get("quantity"),
                 "price": order.get("price"),
                 "stop_price": order.get("stop_price"),
+                "activation_price": order.get("activate_price"),
+                "callback_rate": order.get("callback_rate"),
                 "reduce_only": order.get("reduce_only"),
                 "working_type": order.get("working_type"),
                 "price_protect": order.get("price_protect"),
@@ -159,12 +178,14 @@ def execute_paper_bracket(
         )
         if live_entry.get("ok"):
             live_stop = algo_runner(
-                algo_type="STOP_MARKET",
+                algo_type=stop_loss_order.get("algo_type", "STOP_MARKET"),
                 symbol=symbol,
                 side=stop_loss_order.get("side"),
                 type=stop_loss_order.get("type"),
                 quantity=stop_loss_order.get("quantity"),
                 trigger_price=stop_loss_order.get("stop_price"),
+                activate_price=stop_loss_order.get("activate_price"),
+                callback_rate=stop_loss_order.get("callback_rate"),
                 reduce_only=stop_loss_order.get("reduce_only"),
                 working_type=stop_loss_order.get("working_type"),
                 price_protect=stop_loss_order.get("price_protect"),

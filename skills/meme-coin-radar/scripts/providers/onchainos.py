@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .common import FetchStatus, json_out_safe
@@ -129,6 +130,7 @@ def token_trades(address: str, chain: str | None = None, limit: int = 100) -> tu
 
 
 def token_snapshot(address: str, chain: str | None = None) -> dict[str, Any]:
+    fetched_at = int(time.time())
     price_info, price_status = token_price_info(address, chain=chain)
     advanced_info, advanced_status = token_advanced_info(address, chain=chain)
     cluster_overview, cluster_status = token_cluster_overview(address, chain=chain)
@@ -143,11 +145,11 @@ def token_snapshot(address: str, chain: str | None = None) -> dict[str, Any]:
         "holders": holders,
         "trades": trades,
         "status": {
-            "price_info": price_status.to_dict(),
-            "advanced_info": advanced_status.to_dict(),
-            "cluster_overview": cluster_status.to_dict(),
-            "cluster_top_holders": cluster_top_status.to_dict(),
-            "holders": holders_status.to_dict(),
-            "trades": trades_status.to_dict(),
+            "price_info": {**price_status.to_dict(), "fetched_at": fetched_at},
+            "advanced_info": {**advanced_status.to_dict(), "fetched_at": fetched_at},
+            "cluster_overview": {**cluster_status.to_dict(), "fetched_at": fetched_at},
+            "cluster_top_holders": {**cluster_top_status.to_dict(), "fetched_at": fetched_at},
+            "holders": {**holders_status.to_dict(), "fetched_at": fetched_at},
+            "trades": {**trades_status.to_dict(), "fetched_at": fetched_at},
         },
     }

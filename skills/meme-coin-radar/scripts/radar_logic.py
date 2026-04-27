@@ -23,6 +23,9 @@ try:
         score_momentum_window,
         score_smart_money_resonance,
         score_social_heat,
+        score_social_heat_v2,
+        score_social_momentum,
+        score_news_narrative,
         score_turnover_activity,
         to_float,
     )
@@ -47,6 +50,9 @@ except ImportError:
         score_momentum_window,
         score_smart_money_resonance,
         score_social_heat,
+        score_social_heat_v2,
+        score_social_momentum,
+        score_news_narrative,
         score_turnover_activity,
         to_float,
     )
@@ -217,7 +223,9 @@ def _hard_reject_check(
 def build_trade_plan(
     result: dict[str, Any],
     equity: float = 0.0,
+    settings: Settings | None = None,
 ) -> dict[str, Any] | None:
+    settings = settings or Settings()
     meta = result.get("meta", {})
     price = float(meta.get("price") or 0)
     atr_pct = meta.get("atr_pct")
@@ -226,11 +234,11 @@ def build_trade_plan(
     if price <= 0 or direction not in ("long", "short"):
         return None
 
-    base_risk = atr_pct * 0.8 if atr_pct else 0.05
+    base_risk = atr_pct * settings.stop_loss_atr_mult if atr_pct else 0.05
     risk_pct = min(max(base_risk, 0.035), 0.10)
-    entry_buffer = min(max(risk_pct * 0.35, 0.008), 0.025)
-    tp1_pct = max(risk_pct * 1.6, 0.05)
-    tp2_pct = max(risk_pct * 2.4, 0.08)
+    entry_buffer = min(max(risk_pct * settings.entry_buffer_atr_mult, 0.008), 0.025)
+    tp1_pct = max(risk_pct * settings.take_profit_1_r_mult, 0.05)
+    tp2_pct = max(risk_pct * settings.take_profit_2_r_mult, 0.08)
 
     if direction == "long":
         entry_low = price * (1 - entry_buffer)
@@ -252,10 +260,10 @@ def build_trade_plan(
     rr = reward_distance / risk_distance if risk_distance > 0 else 0.0
 
     setup_label = "ready" if result.get("can_enter") else "watch"
-    if rr < 1.5:
+    if rr < settings.min_rr:
         setup_label = "watch"
         result["can_enter_rr_blocked"] = True
-        result.setdefault("risk_notes", []).append(f"R:R={rr:.2f}<1.5，降级观察")
+        result.setdefault("risk_notes", []).append(f"R:R={rr:.2f}<{settings.min_rr:.2f}，降级观察")
 
     # Position sizing per Obsidian formula
     position_size_usd: float | None = None
@@ -293,7 +301,22 @@ def build_trade_plan(
     entry_side = "BUY" if direction == "long" else "SELL"
     exit_side = "SELL" if direction == "long" else "BUY"
     quantity = quantity if quantity is not None else (position_size_usd / price if position_size_usd and price > 0 else 0.0)
-    split_quantity = quantity / 2 if quantity else 0.0
+    tp1_fraction = min(max(settings.tp1_fraction, 0.0), 1.0)
+    split_quantity = quantity * tp1_fraction if quantity else 0.0
+    remaining_quantity = max((quantity or 0.0) - split_quantity, 0.0)
+    trailing_mode = settings.trailing_mode.strip().lower()
+    trailing_enabled = trailing_mode in {"break_even", "callback"}
+    stop_loss_order_type = "TRAILING_STOP_MARKET" if trailing_mode == "callback" else "STOP_MARKET"
+    trailing_config = {
+        "mode": trailing_mode,
+        "activation": settings.trailing_activation,
+        "callback_rate": settings.trailing_callback_rate,
+        "break_even_offset_bps": settings.break_even_offset_bps,
+        "enabled": trailing_enabled,
+    }
+
+    if settings.require_protection and quantity <= 0:
+        result.setdefault("risk_notes", []).append("保护单策略已启用，但仓位数量无效")
 
     return {
         "setup_label": setup_label,
@@ -306,6 +329,8 @@ def build_trade_plan(
         "rr": round(rr, 2),
         "position_size_usd": position_size_usd,
         "quality_flags": quality_flags,
+        "protection_required": settings.require_protection,
+        "trailing_mode": trailing_mode,
         "execution": {
             "symbol": f"{symbol}USDT" if symbol else "",
             "entry_side": entry_side,
@@ -322,33 +347,39 @@ def build_trade_plan(
             "stop_loss": stop_loss,
             "stop_loss_order": {
                 "side": exit_side,
-                "type": "STOP_MARKET",
+                "type": stop_loss_order_type,
+                "algo_type": stop_loss_order_type,
                 "stop_price": stop_loss,
                 "reduce_only": True,
                 "working_type": "MARK_PRICE",
                 "price_protect": True,
+                "activate_price": take_profit_1 if trailing_mode == "callback" and settings.trailing_activation == "tp1_hit" else mid_entry if trailing_mode == "callback" else None,
+                "callback_rate": settings.trailing_callback_rate if trailing_mode == "callback" else None,
+                "trailing": trailing_config,
             },
             "take_profit_orders": [
-                {
-                    "side": exit_side,
-                    "type": "TAKE_PROFIT_MARKET",
-                    "stop_price": take_profit_1,
-                    "quantity": split_quantity if split_quantity else quantity,
-                    "fraction": 0.5,
-                    "reduce_only": True,
-                    "working_type": "MARK_PRICE",
-                    "price_protect": True,
-                },
-                {
-                    "side": exit_side,
-                    "type": "TAKE_PROFIT_MARKET",
-                    "stop_price": take_profit_2,
-                    "quantity": split_quantity if split_quantity else quantity,
-                    "fraction": 0.5,
-                    "reduce_only": True,
-                    "working_type": "MARK_PRICE",
-                    "price_protect": True,
-                },
+                order for order in [
+                    {
+                        "side": exit_side,
+                        "type": "TAKE_PROFIT_MARKET",
+                        "stop_price": take_profit_1,
+                        "quantity": split_quantity if settings.require_dual_tp and split_quantity else quantity,
+                        "fraction": tp1_fraction if settings.require_dual_tp else 1.0,
+                        "reduce_only": True,
+                        "working_type": "MARK_PRICE",
+                        "price_protect": True,
+                    },
+                    {
+                        "side": exit_side,
+                        "type": "TAKE_PROFIT_MARKET",
+                        "stop_price": take_profit_2,
+                        "quantity": remaining_quantity if remaining_quantity else quantity,
+                        "fraction": max(1.0 - tp1_fraction, 0.0),
+                        "reduce_only": True,
+                        "working_type": "MARK_PRICE",
+                        "price_protect": True,
+                    } if settings.require_dual_tp and remaining_quantity > 0 else None,
+                ] if order
             ],
         },
     }
@@ -376,11 +407,13 @@ def score_candidate(
     mapping_confidence: str = "native",
     strategy_mode: str = "meme_onchain",
     onchain_data: dict[str, Any] | None = None,
+    social_intel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ticker = ticker or {}
     funding = funding or {}
     alpha = alpha or {}
     onchain_data = onchain_data or {}
+    social_intel = social_intel or {}
     mf = list(missing_fields)
 
     chg = float(ticker.get("chg24h", 0.0))
@@ -527,6 +560,8 @@ def score_candidate(
                 "market_cap_fit": 0,
                 "intraday_position": 0,
                 "social_heat": 0,
+                "social_momentum": 0,
+                "news_narrative": 0,
                 "execution_mapping": 0,
                 "execution_alpha": 0,
                 "execution_liquidity": 0,
@@ -594,17 +629,45 @@ def score_candidate(
             k1h.get("trend"),
             k4h.get("trend") if k4h else None,
             count24h,
-        )
+    )
     market_cap_fit = score_major_market_cap_fit(market_cap) if strategy_mode == "majors_cex" else score_market_cap_fit(market_cap)
     intraday_position = score_intraday_position(day_pos)
-    social_heat = score_social_heat(okx_x_rank, count24h)
+    social_momentum = score_social_momentum(
+        okx_x_rank,
+        int(to_float(social_intel.get("social_mentions_24h"), default=0)),
+        to_float(social_intel.get("social_growth_6h"), default=0.0),
+        to_float(social_intel.get("mindshare_score"), default=0.0) if social_intel.get("mindshare_score") is not None else None,
+        count24h,
+    )
+    news_narrative = score_news_narrative(
+        int(to_float(social_intel.get("global_news_count_24h"), default=0)),
+        int(to_float(social_intel.get("panews_article_count_24h"), default=0)),
+        social_intel.get("panews_editorial_keywords") or [],
+        int(to_float(social_intel.get("panews_event_count_7d"), default=0)),
+        to_float(social_intel.get("public_board_snapshot_score"), default=0.0) if social_intel.get("public_board_snapshot_score") is not None else None,
+        social_intel.get("narrative_labels") or [],
+    )
+    social_heat = score_social_heat_v2(
+        okx_x_rank,
+        int(to_float(social_intel.get("social_mentions_24h"), default=0)),
+        to_float(social_intel.get("social_growth_6h"), default=0.0),
+        to_float(social_intel.get("mindshare_score"), default=0.0) if social_intel.get("mindshare_score") is not None else None,
+        count24h,
+        int(to_float(social_intel.get("global_news_count_24h"), default=0)),
+        int(to_float(social_intel.get("panews_article_count_24h"), default=0)),
+        social_intel.get("panews_editorial_keywords") or [],
+        int(to_float(social_intel.get("panews_event_count_7d"), default=0)),
+        to_float(social_intel.get("public_board_snapshot_score"), default=0.0) if social_intel.get("public_board_snapshot_score") is not None else None,
+        social_intel.get("narrative_labels") or [],
+    ) if social_intel else score_social_heat(okx_x_rank, count24h)
     if strategy_mode == "majors_cex":
         smart_money_resonance = score_major_participation_proxy(
             smart_money_resonance,
             count24h,
             to_float(oi.get("oi_change_pct"), default=None) if oi else None,
         )
-    oos = turnover_activity + momentum_window + holder_structure + smart_money_resonance + market_cap_fit + intraday_position + social_heat
+    base_oos = turnover_activity + momentum_window + holder_structure + smart_money_resonance + market_cap_fit + intraday_position
+    oos = base_oos + social_heat
 
     execution_mapping = score_execution_mapping(mapping_confidence, tradable)
     execution_alpha = score_execution_alpha(count24h, alpha_pct)
@@ -649,9 +712,9 @@ def score_candidate(
             decision = "manual_review"
         else:
             decision = "reject"
-    elif oos >= 70 and ers >= 65 and tradable:
+    elif oos >= 75 and ers >= 65 and tradable:
         decision = "recommend_paper_trade"
-    elif oos >= 70:
+    elif oos >= 75:
         decision = "watch_only"
     elif oos >= 55 or len(set(mf)) >= 3:
         decision = "manual_review"
@@ -729,6 +792,8 @@ def score_candidate(
             "market_cap_fit": market_cap_fit,
             "intraday_position": intraday_position,
             "social_heat": social_heat,
+            "social_momentum": social_momentum,
+            "news_narrative": news_narrative,
             "execution_mapping": execution_mapping,
             "execution_alpha": execution_alpha,
             "execution_liquidity": execution_liquidity,
@@ -766,6 +831,7 @@ def score_candidate(
             "fr": fr,
             "chg": chg,
             "count24h": count24h,
+            "base_oos": base_oos,
             "regime": regime,
             "oi": oi_data,
             "day_pos": day_pos,
@@ -775,6 +841,7 @@ def score_candidate(
             "okx_x_rank": okx_x_rank,
             "strategy_mode": strategy_mode,
             "onchain": onchain_data,
+            "social_intel": social_intel,
             "ticker_source": ticker.get("source", "binance") if ticker else "",
             "funding_source": funding.get("source", "binance") if funding else "",
             "kline_source": ticker.get("source", "binance") if (ticker and klines) else "",

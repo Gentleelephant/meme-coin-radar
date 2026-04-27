@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from .history_store import append_closed_position, load_closed_positions, save_paper_metrics
+    from .history_store import append_closed_position, save_paper_metrics
+    from .paper_analytics import compute_metrics
     from .paper_order_manager import (
         ORDER_ACTIVE,
         ORDER_CANCELED,
@@ -22,7 +23,8 @@ try:
         save_state,
     )
 except ImportError:
-    from history_store import append_closed_position, load_closed_positions, save_paper_metrics
+    from history_store import append_closed_position, save_paper_metrics
+    from paper_analytics import compute_metrics
     from paper_order_manager import (
         ORDER_ACTIVE,
         ORDER_CANCELED,
@@ -105,6 +107,38 @@ def _realize_close(position: dict[str, Any], qty: float, price: float, fee_bps: 
     return pnl - fee, fee
 
 
+def _break_even_price(position: dict[str, Any], offset_bps: float) -> float:
+    entry = float(position.get("entry_avg_price") or position.get("planned_entry_price") or 0.0)
+    if entry <= 0:
+        return 0.0
+    offset = offset_bps / 10000
+    if position.get("direction") == "long":
+        return entry * (1 + offset)
+    return entry * (1 - offset)
+
+
+def _update_trailing_stop(position: dict[str, Any], stop_order: dict[str, Any] | None, tick: PriceTick) -> None:
+    if not stop_order or stop_order.get("status") != ORDER_ACTIVE:
+        return
+    trailing = stop_order.get("trailing") or {}
+    mode = str(trailing.get("mode") or "none").lower()
+    if mode == "none":
+        return
+    if mode == "callback" and position.get("trailing_active"):
+        callback_rate = float(trailing.get("callback_rate") or 0.0)
+        if callback_rate <= 0:
+            return
+        anchor = float(position.get("trailing_anchor_price") or 0.0)
+        if position.get("direction") == "long":
+            anchor = max(anchor, tick.high)
+            trigger = anchor * (1 - callback_rate / 100)
+        else:
+            anchor = min(anchor if anchor > 0 else tick.low, tick.low)
+            trigger = anchor * (1 + callback_rate / 100)
+        position["trailing_anchor_price"] = anchor
+        stop_order["trigger_price"] = trigger
+
+
 def reconcile_all_positions(
     output_dir,
     tick_map: dict[str, list[PriceTick]],
@@ -160,10 +194,16 @@ def reconcile_all_positions(
                     position["opened_qty"] = entry_order["fill_qty"]
                     position["remaining_qty"] = entry_order["fill_qty"]
                     position["fee_paid"] = float(position.get("fee_paid", 0.0)) + fee
+                    position["entry_fee_paid"] = float(position.get("entry_fee_paid", 0.0)) + fee
                     position["status"] = POSITION_OPEN
                     position["opened_at"] = tick.timestamp
                     if stop_order:
                         stop_order["status"] = ORDER_ACTIVE
+                        trailing = stop_order.get("trailing") or {}
+                        if str(trailing.get("mode") or "none").lower() == "callback" and str(trailing.get("activation") or "tp1_hit").lower() == "entry_fill":
+                            position["trailing_active"] = True
+                            position["trailing_anchor_price"] = tick.high if position.get("direction") == "long" else tick.low
+                            _update_trailing_stop(position, stop_order, tick)
                     for order in tp_orders:
                         order["status"] = ORDER_ACTIVE
                     record_event(output_dir, position, entry_order.get("order_id"), "POSITION_OPENED", {"fill_price": fill_price})
@@ -191,6 +231,7 @@ def reconcile_all_positions(
             mae = (entry_price - tick.low) if position.get("direction") == "long" else (tick.high - entry_price)
             position["max_favorable_excursion"] = max(float(position.get("max_favorable_excursion", 0.0)), mfe)
             position["max_adverse_excursion"] = max(float(position.get("max_adverse_excursion", 0.0)), mae)
+            _update_trailing_stop(position, stop_order, tick)
 
             liquidation_price = position.get("liquidation_price")
             if liquidation_price:
@@ -270,6 +311,16 @@ def reconcile_all_positions(
                     if not position.get("tp1_hit"):
                         position["tp1_hit"] = True
                         position["bars_since_tp1"] = 0
+                        trailing = (stop_order or {}).get("trailing") or {}
+                        mode = str(trailing.get("mode") or "none").lower()
+                        if stop_order and mode == "break_even":
+                            trigger = _break_even_price(position, float(trailing.get("break_even_offset_bps") or 0.0))
+                            if trigger > 0:
+                                stop_order["trigger_price"] = trigger
+                        elif stop_order and mode == "callback" and str(trailing.get("activation") or "tp1_hit").lower() == "tp1_hit":
+                            position["trailing_active"] = True
+                            position["trailing_anchor_price"] = tick.high if position.get("direction") == "long" else tick.low
+                            _update_trailing_stop(position, stop_order, tick)
                     if position["remaining_qty"] > 0:
                         position["status"] = POSITION_PARTIALLY_CLOSED
                         if stop_order and stop_order.get("status") == ORDER_ACTIVE:
@@ -349,14 +400,21 @@ def reconcile_all_positions(
     liquidation_threshold = sum(float(pos.get("liquidation_threshold", 0.0)) for pos in positions.values() if pos.get("status") in {POSITION_PENDING, POSITION_OPEN, POSITION_PARTIALLY_CLOSED})
 
     starting_equity = float(account.get("starting_equity", 10000.0) or 10000.0)
-    fees_paid = sum(float(pos.get("fee_paid", 0.0)) for pos in positions.values()) + sum(float(pos.get("fee_paid", 0.0)) for pos in closed_positions)
-    current_equity = starting_equity + float(account.get("realized_pnl", 0.0)) + total_realized + total_unrealized - fees_paid
+    closed_realized = sum(float(pos.get("realized_pnl", 0.0)) for pos in closed_positions)
+    realized_pnl = float(account.get("realized_pnl", 0.0)) + closed_realized
+    closed_entry_fees = float(account.get("closed_entry_fees_paid", 0.0)) + sum(float(pos.get("entry_fee_paid", 0.0)) for pos in closed_positions)
+    open_entry_fees = sum(float(pos.get("entry_fee_paid", 0.0)) for pos in positions.values())
+    closed_total_fees = float(account.get("closed_total_fees_paid", 0.0)) + sum(float(pos.get("fee_paid", 0.0)) for pos in closed_positions)
+    total_fees_paid = closed_total_fees + sum(float(pos.get("fee_paid", 0.0)) for pos in positions.values())
+    current_equity = starting_equity + realized_pnl + total_realized + total_unrealized - (closed_entry_fees + open_entry_fees)
     account["used_margin"] = used_margin
     account["free_margin"] = max(current_equity - used_margin, 0.0)
     account["available_equity"] = account["free_margin"]
-    account["realized_pnl"] = float(account.get("realized_pnl", 0.0)) + sum(float(pos.get("realized_pnl", 0.0)) for pos in closed_positions)
+    account["realized_pnl"] = realized_pnl
     account["unrealized_pnl"] = total_unrealized
-    account["fees_paid"] = fees_paid
+    account["fees_paid"] = total_fees_paid
+    account["closed_entry_fees_paid"] = closed_entry_fees
+    account["closed_total_fees_paid"] = closed_total_fees
     account["total_equity"] = current_equity
     account["current_equity"] = current_equity
     account["peak_equity"] = max(float(account.get("peak_equity", starting_equity)), current_equity)
@@ -372,47 +430,4 @@ def reconcile_all_positions(
         "closed_positions": len(closed_positions),
         "account": account,
         "metrics": metrics,
-    }
-
-
-def compute_metrics(output_dir, account: dict[str, Any], open_positions: dict[str, Any] | None = None) -> dict[str, Any]:
-    closed = load_closed_positions(output_dir)
-    total = len(closed)
-    wins = [pos for pos in closed if float(pos.get("realized_pnl", 0.0)) > 0]
-    losses = [pos for pos in closed if float(pos.get("realized_pnl", 0.0)) <= 0]
-    tp1_hits = [pos for pos in closed if pos.get("tp1_hit")]
-    full_tp = [pos for pos in closed if pos.get("exit_reason") == "take_profit"]
-    stop_losses = [pos for pos in closed if pos.get("exit_reason") == "stop_loss"]
-    profit_sum = sum(float(pos.get("realized_pnl", 0.0)) for pos in wins)
-    loss_sum = abs(sum(float(pos.get("realized_pnl", 0.0)) for pos in losses))
-    raw_win_rate = len(wins) / total if total else 0.0
-    tp1_hit_rate = len(tp1_hits) / total if total else 0.0
-    full_tp_rate = len(full_tp) / total if total else 0.0
-    stop_loss_rate = len(stop_losses) / total if total else 0.0
-    profit_factor = profit_sum / loss_sum if loss_sum > 0 else None
-
-    breakdown: dict[str, Any] = {"strategy_mode": {}, "candidate_source": {}}
-    for pos in closed:
-        mode = str(pos.get("strategy_mode") or "unknown")
-        breakdown["strategy_mode"].setdefault(mode, {"trades": 0, "wins": 0, "net_pnl": 0.0})
-        breakdown["strategy_mode"][mode]["trades"] += 1
-        breakdown["strategy_mode"][mode]["wins"] += 1 if float(pos.get("realized_pnl", 0.0)) > 0 else 0
-        breakdown["strategy_mode"][mode]["net_pnl"] += float(pos.get("realized_pnl", 0.0))
-        for source in pos.get("candidate_sources", []) or []:
-            breakdown["candidate_source"].setdefault(source, {"trades": 0, "wins": 0, "net_pnl": 0.0})
-            breakdown["candidate_source"][source]["trades"] += 1
-            breakdown["candidate_source"][source]["wins"] += 1 if float(pos.get("realized_pnl", 0.0)) > 0 else 0
-            breakdown["candidate_source"][source]["net_pnl"] += float(pos.get("realized_pnl", 0.0))
-
-    return {
-        "total_trades": total,
-        "raw_win_rate": raw_win_rate,
-        "tp1_hit_rate": tp1_hit_rate,
-        "full_tp_rate": full_tp_rate,
-        "stop_loss_rate": stop_loss_rate,
-        "profit_factor": profit_factor,
-        "net_pnl": float(account.get("realized_pnl", 0.0)),
-        "current_equity": float(account.get("current_equity", account.get("total_equity", 0.0))),
-        "open_positions": len(open_positions or {}),
-        "breakdown": breakdown,
     }

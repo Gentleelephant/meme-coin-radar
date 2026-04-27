@@ -197,18 +197,37 @@ def binance_new_algo_order(**params: Any) -> dict[str, Any]:
     return futures_new_algo_order(**params)
 
 
-def okx_hot_tokens(ranking_type: int = 4, chain: str | None = None, limit: int = 20, time_frame: int = 4) -> list:
+def _status_payload(status: FetchStatus) -> dict[str, Any]:
+    return {**status.to_dict(), "fetched_at": int(time.time())}
+
+
+def okx_hot_tokens(
+    ranking_type: int = 4,
+    chain: str | None = None,
+    limit: int = 20,
+    time_frame: int = 4,
+    include_status: bool = False,
+) -> list | tuple[list, dict[str, Any]]:
     items, _status = onchainos_hot_tokens_provider(
         ranking_type=ranking_type,
         chain=chain,
         limit=limit,
         time_frame=time_frame,
     )
+    if include_status:
+        return items, _status_payload(_status)
     return items
 
 
-def okx_signal_list(chain: str, wallet_type: str = "1,2,3", limit: int = 20) -> list:
+def okx_signal_list(
+    chain: str,
+    wallet_type: str = "1,2,3",
+    limit: int = 20,
+    include_status: bool = False,
+) -> list | tuple[list, dict[str, Any]]:
     items, _status = onchainos_signal_list_provider(chain=chain, wallet_type=wallet_type, limit=limit)
+    if include_status:
+        return items, _status_payload(_status)
     return items
 
 
@@ -217,13 +236,16 @@ def okx_tracker_activities(
     chain: str | None = None,
     trade_type: int = 1,
     limit: int = 50,
-) -> list:
+    include_status: bool = False,
+) -> list | tuple[list, dict[str, Any]]:
     items, _status = onchainos_tracker_activities_provider(
         tracker_type=tracker_type,
         chain=chain,
         trade_type=trade_type,
         limit=limit,
     )
+    if include_status:
+        return items, _status_payload(_status)
     return items
 
 

@@ -231,6 +231,93 @@ def score_social_heat(okx_x_rank: int | None, alpha_count24h: int) -> int:
     return min(okx_score + alpha_score, 5)
 
 
+def score_social_momentum(
+    okx_x_rank: int | None,
+    social_mentions_24h: int | None,
+    social_growth_6h: float | None,
+    mindshare_score: float | None,
+    alpha_count24h: int,
+) -> int:
+    score = 0
+    if okx_x_rank is not None:
+        if okx_x_rank <= 5:
+            score += 2
+        elif okx_x_rank <= 15:
+            score += 1
+    if social_mentions_24h is not None:
+        if social_mentions_24h >= 100:
+            score += 2
+        elif social_mentions_24h >= 25:
+            score += 1
+    if social_growth_6h is not None:
+        if social_growth_6h >= 0.5:
+            score += 2
+        elif social_growth_6h > 0.1:
+            score += 1
+    if mindshare_score is not None and mindshare_score > 0:
+        score += 1
+    if alpha_count24h >= 50000 and (social_growth_6h or 0.0) > 0.1:
+        score += 1
+    return min(score, 8)
+
+
+def score_news_narrative(
+    global_news_count_24h: int | None,
+    panews_article_count_24h: int | None,
+    panews_editorial_keywords: list[str] | None,
+    panews_event_count_7d: int | None,
+    public_board_snapshot_score: float | None,
+    narrative_labels: list[str] | None,
+) -> int:
+    score = 0
+    if (global_news_count_24h or 0) >= 3:
+        score += 2
+    elif (global_news_count_24h or 0) >= 1:
+        score += 1
+    if (panews_article_count_24h or 0) >= 2:
+        score += 2
+    elif (panews_article_count_24h or 0) >= 1:
+        score += 1
+    if panews_editorial_keywords:
+        score += 1
+    if (panews_event_count_7d or 0) >= 1:
+        score += 1
+    if public_board_snapshot_score is not None and public_board_snapshot_score > 0:
+        score += 1
+    elif narrative_labels:
+        score += 1
+    return min(score, 7)
+
+
+def score_social_heat_v2(
+    okx_x_rank: int | None,
+    social_mentions_24h: int | None,
+    social_growth_6h: float | None,
+    mindshare_score: float | None,
+    alpha_count24h: int,
+    global_news_count_24h: int | None,
+    panews_article_count_24h: int | None,
+    panews_editorial_keywords: list[str] | None,
+    panews_event_count_7d: int | None,
+    public_board_snapshot_score: float | None,
+    narrative_labels: list[str] | None,
+) -> int:
+    return score_social_momentum(
+        okx_x_rank,
+        social_mentions_24h,
+        social_growth_6h,
+        mindshare_score,
+        alpha_count24h,
+    ) + score_news_narrative(
+        global_news_count_24h,
+        panews_article_count_24h,
+        panews_editorial_keywords,
+        panews_event_count_7d,
+        public_board_snapshot_score,
+        narrative_labels,
+    )
+
+
 def score_execution_mapping(mapping_confidence: str, tradable: bool) -> int:
     if not tradable:
         return 0

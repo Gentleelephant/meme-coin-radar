@@ -15,6 +15,7 @@ try:
         save_paper_orders,
         save_paper_positions,
     )
+    from .paper_analytics import data_quality_tier
 except ImportError:
     from history_store import (
         append_paper_event,
@@ -25,6 +26,7 @@ except ImportError:
         save_paper_orders,
         save_paper_positions,
     )
+    from paper_analytics import data_quality_tier
 
 
 ORDER_NEW = "NEW"
@@ -81,6 +83,8 @@ def ensure_account(output_dir, starting_equity: float = 10000.0) -> dict[str, An
         "realized_pnl": 0.0,
         "unrealized_pnl": 0.0,
         "fees_paid": 0.0,
+        "closed_entry_fees_paid": 0.0,
+        "closed_total_fees_paid": 0.0,
         "peak_equity": starting_equity,
         "max_drawdown": 0.0,
         "liquidation_threshold": 0.0,
@@ -104,6 +108,7 @@ def create_position_from_result(
 
     plan = result.get("trade_plan") or {}
     execution = copy.deepcopy(plan.get("execution") or {})
+    social_snapshot = copy.deepcopy((result.get("meta") or {}).get("social_intel") or {})
     symbol = execution.get("symbol") or f"{result.get('symbol', '').upper()}USDT"
     if not execution or not symbol:
         return {
@@ -131,6 +136,7 @@ def create_position_from_result(
 
     position_id = _new_id("pos")
     created_at = _now_ts()
+    quality_score = int((result.get("module_scores") or {}).get("data_quality", 0) or 0)
 
     entry_order_id = _new_id("ord")
     stop_loss_order_id = _new_id("ord")
@@ -180,6 +186,7 @@ def create_position_from_result(
         "price": None,
         "trigger_price": execution.get("stop_loss_order", {}).get("stop_price"),
         "reduce_only": True,
+        "algo_type": execution.get("stop_loss_order", {}).get("algo_type"),
         "status": ORDER_NEW,
         "created_at": created_at,
         "triggered_at": None,
@@ -187,6 +194,9 @@ def create_position_from_result(
         "fill_price": None,
         "fill_qty": 0.0,
         "fee_paid": 0.0,
+        "activate_price": execution.get("stop_loss_order", {}).get("activate_price"),
+        "callback_rate": execution.get("stop_loss_order", {}).get("callback_rate"),
+        "trailing": copy.deepcopy(execution.get("stop_loss_order", {}).get("trailing") or {}),
     }
     orders[stop_loss_order_id] = stop_loss_order
 
@@ -224,8 +234,15 @@ def create_position_from_result(
         "oos": result.get("oos", 0),
         "ers": result.get("ers", 0),
         "final_score": result.get("final_score", result.get("total", 0)),
+        "data_quality_score": quality_score,
+        "data_quality_tier": data_quality_tier(quality_score),
         "entry_reasons": result.get("entry_reasons", []),
         "risk_notes": result.get("risk_notes", []),
+        "social_snapshot": social_snapshot,
+        "narrative_labels": social_snapshot.get("narrative_labels", []),
+        "trailing_mode": str((execution.get("stop_loss_order", {}).get("trailing") or {}).get("mode") or "none"),
+        "trailing_active": False,
+        "trailing_anchor_price": None,
         "entry_order_ids": [entry_order_id],
         "stop_loss_order_ids": [stop_loss_order_id],
         "take_profit_order_ids": take_profit_order_ids,
@@ -240,6 +257,7 @@ def create_position_from_result(
         "realized_pnl": 0.0,
         "unrealized_pnl": 0.0,
         "fee_paid": 0.0,
+        "entry_fee_paid": 0.0,
         "max_favorable_excursion": 0.0,
         "max_adverse_excursion": 0.0,
         "leverage": leverage,

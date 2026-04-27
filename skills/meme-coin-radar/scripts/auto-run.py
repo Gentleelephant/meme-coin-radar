@@ -20,12 +20,14 @@ import json
 import os
 from datetime import datetime
 
-from history_store import cleanup_old_snapshots, compute_relative_metrics, load_paper_positions, save_alpha_snapshot, save_ticker_snapshot
+from history_store import cleanup_old_snapshots, compute_relative_metrics, load_paper_positions, save_alpha_snapshot, save_social_snapshot, save_ticker_snapshot
 from config import ensure_output_dir, load_settings
 from asset_mapping import apply_to_candidates
 from candidate_discovery import discover_candidates, get_cex_symbols, prioritize_candidates
 from execution_binance import execute_paper_bracket
-from paper_reconciler import compute_metrics, reconcile_all_positions, ticks_from_klines
+from paper_analytics import compute_metrics
+from paper_reconciler import reconcile_all_positions, ticks_from_klines
+from providers.intel import build_shared_intel_context, fetch_social_intel
 from radar_logic import build_trade_plan, score_candidate
 from skill_dispatcher import (
     batch_binance,
@@ -87,6 +89,20 @@ def _format_freshness_summary(report: dict) -> str:
     return f"⚠️ {stale_count}/{total_fields} 个数据字段超过 5 分钟阈值，建议复核"
 
 
+def _prefix_status_fields(status_map: dict[str, dict], prefix: str) -> dict[str, dict]:
+    return {f"{prefix}{key}": value for key, value in (status_map or {}).items()}
+
+
+def _okx_attention_context(snapshot: dict) -> dict:
+    signal_items = snapshot.get("signals", []) or []
+    tracker_items = snapshot.get("tracker_items", []) or []
+    return {
+        "okx_x_rank": snapshot.get("okx_x_rank"),
+        "kol_onchain_activity_count": sum(1 for item in signal_items if str(item.get("walletType") or "") == "2"),
+        "smart_money_onchain_activity_count": len(tracker_items),
+    }
+
+
 print("=== 妖币雷达 Phase 3.0 扫描（OnchainOS + Alpha + Paper Trade）===")
 print(f"时间: {TS}")
 
@@ -113,10 +129,10 @@ for sym, data in top_alpha[:5]:
 
 # Step G1/G2: OKX OnchainOS
 print("[G1/G2] OKX OnchainOS 链上扫描...")
-okx_hot_trending = okx_hot_tokens(ranking_type=4, chain="solana", limit=20, time_frame=4)
-okx_hot_x = okx_hot_tokens(ranking_type=5, chain="solana", limit=20, time_frame=4)
-okx_signals = okx_signal_list(chain="solana", wallet_type="1,2,3", limit=20)
-okx_tracker = okx_tracker_activities(tracker_type="smart_money", chain="solana", trade_type=1, limit=50)
+okx_hot_trending, okx_hot_trending_status = okx_hot_tokens(ranking_type=4, chain="solana", limit=20, time_frame=4, include_status=True)
+okx_hot_x, okx_hot_x_status = okx_hot_tokens(ranking_type=5, chain="solana", limit=20, time_frame=4, include_status=True)
+okx_signals, okx_signals_status = okx_signal_list(chain="solana", wallet_type="1,2,3", limit=20, include_status=True)
+okx_tracker, okx_tracker_status = okx_tracker_activities(tracker_type="smart_money", chain="solana", trade_type=1, limit=50, include_status=True)
 save("05_okx_hot_trending.json", json.dumps(okx_hot_trending, indent=2, default=str, ensure_ascii=False))
 save("06_okx_hot_x.json", json.dumps(okx_hot_x, indent=2, default=str, ensure_ascii=False))
 save("07_okx_signals.json", json.dumps(okx_signals, indent=2, default=str, ensure_ascii=False))
@@ -237,6 +253,37 @@ print(f"[2b] Binance batch ({len(cex_symbols)} tradable coins)...")
 bnc_batch = batch_binance(cex_symbols)
 bnc_results = bnc_batch["results"]
 fetch_status = bnc_batch.get("fetch_status", {})
+shared_intel_context = build_shared_intel_context(DATA_DIR, lang="en")
+fetch_status["__onchain_discovery__"] = {
+    "hot_trending": okx_hot_trending_status,
+    "hot_x": okx_hot_x_status,
+    "signals": okx_signals_status,
+    "tracker": okx_tracker_status,
+    "panews_rankings": {
+        "ok": (shared_intel_context.get("panews_rankings") or {}).get("ok", False),
+        "source": (shared_intel_context.get("panews_rankings") or {}).get("source", "panews-rankings"),
+        "fetched_at": (shared_intel_context.get("panews_rankings") or {}).get("fetched_at", 0),
+        "error_type": (shared_intel_context.get("panews_rankings") or {}).get("error_type"),
+    },
+    "panews_hooks": {
+        "ok": (shared_intel_context.get("panews_hooks") or {}).get("ok", False),
+        "source": (shared_intel_context.get("panews_hooks") or {}).get("source", "panews-hooks"),
+        "fetched_at": (shared_intel_context.get("panews_hooks") or {}).get("fetched_at", 0),
+        "error_type": (shared_intel_context.get("panews_hooks") or {}).get("error_type"),
+    },
+    "panews_polymarket": {
+        "ok": (shared_intel_context.get("panews_polymarket") or {}).get("ok", False),
+        "source": (shared_intel_context.get("panews_polymarket") or {}).get("source", "panews-polymarket-highlights"),
+        "fetched_at": (shared_intel_context.get("panews_polymarket") or {}).get("fetched_at", 0),
+        "error_type": (shared_intel_context.get("panews_polymarket") or {}).get("error_type"),
+    },
+}
+for symbol, snapshot in onchain_snapshots.items():
+    status_map = snapshot.get("status") or {}
+    if not status_map:
+        continue
+    fetch_status.setdefault(symbol, {})
+    fetch_status[symbol].update(_prefix_status_fields(status_map, "onchain_"))
 save(
     "02_binance_batch.json",
     json.dumps(
@@ -257,16 +304,9 @@ save(
     ),
 )
 
-# Save fetch_status for monitoring
-save(
-    "09_fetch_status.json",
-    json.dumps(fetch_status, indent=2, default=str, ensure_ascii=False),
-)
-
 # P1-1: Data freshness check
 scan_ts = int(datetime.now().timestamp())
 freshness_report = _data_freshness_report(fetch_status, scan_ts)
-save("10_data_freshness.json", json.dumps(freshness_report, indent=2, default=str, ensure_ascii=False))
 freshness_summary = _format_freshness_summary(freshness_report)
 print(f"  {freshness_summary}")
 
@@ -290,8 +330,9 @@ if existing_position_symbols:
 # Step 3: 评分
 print("[3] Obsidian 五大模块评分...")
 scored = []
+social_intel_map: dict[str, dict] = {}
 
-# Score tradable CEX candidates
+tradable_base_results: list[tuple[dict, dict, dict, dict]] = []
 for cand in tradable_candidates:
     coin = cand.get("symbol", "")
     provider_data = bnc_results.get(coin, {})
@@ -301,10 +342,81 @@ for cand in tradable_candidates:
     klines_4h = provider_data.get("klines_4h")
     oi = provider_data.get("oi")
     alpha = alpha_dict.get(coin.upper(), {})
-
+    klines_1d = provider_data.get("klines_1d")
+    cand_metadata = cand.get("metadata", {})
+    onchain_data = cand_metadata.get("onchain_data", {})
     if ticker is None and funding is None:
         print(f"  {coin}: Binance无数据，跳过")
         continue
+    base_result = score_candidate(
+        symbol=coin,
+        ticker=ticker,
+        funding=funding,
+        alpha=alpha,
+        klines=klines,
+        btc_dir=btc_dir,
+        missing_fields=[],
+        settings=SETTINGS,
+        klines_4h=klines_4h,
+        klines_1d=klines_1d,
+        oi=oi,
+        equity=account_equity,
+        alt_rotation=alt_rotation,
+        tradable=cand.get("tradable_on_cex", True),
+        market_type=cand.get("market_type", "cex_perp"),
+        mapping_confidence=cand.get("mapping_confidence", "native"),
+        strategy_mode=cand.get("strategy_mode", "meme_onchain"),
+        onchain_data=onchain_data,
+        social_intel={},
+    )
+    tradable_base_results.append((cand, provider_data, alpha, base_result))
+
+tradable_base_results.sort(key=lambda item: item[3].get("meta", {}).get("base_oos", 0), reverse=True)
+intel_limit = max(1, len(tradable_base_results) // 2) if tradable_base_results else 0
+intel_candidates = {
+    item[0].get("symbol", "")
+    for index, item in enumerate(tradable_base_results)
+    if index < intel_limit or item[3].get("meta", {}).get("base_oos", 0) >= 45
+}
+
+for cand, _provider_data, _alpha, _base_result in tradable_base_results:
+    coin = cand.get("symbol", "")
+    if not coin or coin not in intel_candidates:
+        continue
+    cand_metadata = cand.get("metadata", {})
+    onchain_data = cand_metadata.get("onchain_data", {})
+    social_intel = fetch_social_intel(
+        symbol=coin,
+        output_dir=DATA_DIR,
+        chain=cand.get("chain"),
+        token_address=cand.get("token_address"),
+        okx_context=_okx_attention_context(onchain_data),
+        panews_context=shared_intel_context,
+        lang="en",
+    )
+    social_intel_map[coin] = social_intel
+    fetch_status.setdefault(coin, {})
+    for source_name, source_status in (social_intel.get("status") or {}).items():
+        fetch_status[coin][f"intel_{source_name}"] = source_status
+
+if social_intel_map:
+    save("15_social_intel.json", json.dumps(social_intel_map, indent=2, default=str, ensure_ascii=False))
+    save_social_snapshot(DATA_DIR, social_intel_map)
+
+save("09_fetch_status.json", json.dumps(fetch_status, indent=2, default=str, ensure_ascii=False))
+scan_ts = int(datetime.now().timestamp())
+freshness_report = _data_freshness_report(fetch_status, scan_ts)
+save("10_data_freshness.json", json.dumps(freshness_report, indent=2, default=str, ensure_ascii=False))
+freshness_summary = _format_freshness_summary(freshness_report)
+
+# Score tradable CEX candidates
+for cand, provider_data, alpha, _base_result in tradable_base_results:
+    coin = cand.get("symbol", "")
+    ticker = provider_data.get("ticker")
+    funding = provider_data.get("funding")
+    klines = provider_data.get("klines")
+    klines_4h = provider_data.get("klines_4h")
+    oi = provider_data.get("oi")
 
     klines_1d = provider_data.get("klines_1d")
     cand_metadata = cand.get("metadata", {})
@@ -337,11 +449,12 @@ for cand in tradable_candidates:
         mapping_confidence=cand.get("mapping_confidence", "native"),
         strategy_mode=cand.get("strategy_mode", "meme_onchain"),
         onchain_data=onchain_data,
+        social_intel=social_intel_map.get(coin, {}),
     )
     result["name"] = coin
     result["candidate_sources"] = cand.get("candidate_sources", [])
     result["relative_metrics"] = rel_metrics
-    plan = build_trade_plan(result, equity=account_equity)
+    plan = build_trade_plan(result, equity=account_equity, settings=SETTINGS)
     result["trade_plan"] = plan
     if plan and plan.get("rr", 0) < 1.5:
         result["can_enter"] = False
