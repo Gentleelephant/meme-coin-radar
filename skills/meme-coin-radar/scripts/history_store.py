@@ -228,9 +228,16 @@ def cleanup_old_snapshots(output_dir: Path, keep_days: int = 30) -> int:
     removed = 0
     for path in hdir.glob("*.json"):
         try:
-            # Extract date from filename: ticker_YYYYMMDD.json
             date_str = path.stem.split("_")[-1]
-            file_date = datetime.strptime(date_str, "%Y%m%d")
+            file_date = None
+            for fmt in ("%Y%m%d", "%Y%m%d%H"):
+                try:
+                    file_date = datetime.strptime(date_str, fmt)
+                    break
+                except ValueError:
+                    continue
+            if file_date is None:
+                continue
             if file_date < cutoff:
                 path.unlink()
                 removed += 1
@@ -314,6 +321,27 @@ def save_paper_metrics(output_dir: Path, metrics: dict[str, Any]) -> Path:
 
 def load_paper_metrics(output_dir: Path) -> dict[str, Any]:
     path = paper_metrics_path(output_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def paper_strategy_feedback_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "paper_strategy_feedback.json"
+
+
+def save_paper_strategy_feedback(output_dir: Path, feedback: dict[str, Any]) -> Path:
+    path = paper_strategy_feedback_path(output_dir)
+    path.write_text(json.dumps(feedback, indent=2, default=str, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def load_paper_strategy_feedback(output_dir: Path) -> dict[str, Any]:
+    path = paper_strategy_feedback_path(output_dir)
     if not path.exists():
         return {}
     try:

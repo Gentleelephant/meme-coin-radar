@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 import urllib.request
+from dataclasses import dataclass
 from typing import Any, Optional
 
 
@@ -20,6 +21,10 @@ class FetchStatus:
     PERMISSION_DENIED = "permission_denied"
     SOURCE_UNAVAILABLE = "source_unavailable"
     FIELD_NOT_SUPPORTED = "field_not_supported"
+    AUTH_ERROR = "auth_error"
+    RATE_LIMIT = "rate_limit"
+    REGION_RESTRICTED = "region_restricted"
+    OPTIONAL_UNAVAILABLE = "optional_unavailable"
 
     def __init__(
         self,
@@ -30,7 +35,7 @@ class FetchStatus:
         source: str = "",
     ):
         self.ok = ok
-        self.error_type = error_type or (self.OK if ok else "unknown")
+        self.error_type = None if ok else (error_type or "unknown")
         self.message = message
         self.latency_ms = latency_ms
         self.source = source
@@ -59,7 +64,15 @@ class FetchStatus:
             return cls(ok=False, error_type=cls.SOURCE_UNAVAILABLE, message=str(exc), source=source)
 
 
-def run(cmd: str, timeout: int = 20) -> str:
+@dataclass
+class CommandResult:
+    returncode: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+
+
+def run(cmd: str, timeout: int = 20) -> CommandResult:
     try:
         completed = subprocess.run(
             cmd,
@@ -68,14 +81,107 @@ def run(cmd: str, timeout: int = 20) -> str:
             text=True,
             timeout=timeout,
         )
-        return completed.stdout.strip()
+        return CommandResult(
+            returncode=completed.returncode,
+            stdout=(completed.stdout or "").strip(),
+            stderr=(completed.stderr or "").strip(),
+            timed_out=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(
+            returncode=None,
+            stdout=((exc.stdout or "") if isinstance(exc.stdout, str) else "").strip(),
+            stderr=((exc.stderr or "") if isinstance(exc.stderr, str) else "").strip(),
+            timed_out=True,
+        )
     except Exception as exc:
-        return f"[ERROR] {exc}"
+        return CommandResult(returncode=None, stdout="", stderr=str(exc), timed_out=False)
+
+
+def _status_from_error_message(message: str, source: str = "", latency_ms: float = 0.0) -> FetchStatus:
+    normalized = (message or "").strip()
+    lowered = normalized.lower()
+
+    if not normalized:
+        return FetchStatus(
+            ok=False,
+            error_type=FetchStatus.SOURCE_UNAVAILABLE,
+            message="empty response",
+            latency_ms=latency_ms,
+            source=source,
+        )
+
+    if "timed out" in lowered or "timeout" in lowered:
+        error_type = FetchStatus.TIMEOUT
+    elif "command not found" in lowered or "no such file or directory" in lowered:
+        error_type = FetchStatus.COMMAND_NOT_FOUND
+    elif "permission denied" in lowered or "operation not permitted" in lowered:
+        error_type = FetchStatus.PERMISSION_DENIED
+    elif "50125" in lowered or "80001" in lowered or "not available in your region" in lowered:
+        error_type = FetchStatus.REGION_RESTRICTED
+    elif "rate limit" in lowered or "too many requests" in lowered or "throttl" in lowered:
+        error_type = FetchStatus.RATE_LIMIT
+    elif (
+        "api key" in lowered
+        or "secret key" in lowered
+        or "passphrase" in lowered
+        or "unauthorized" in lowered
+        or "forbidden" in lowered
+        or "invalid signature" in lowered
+        or "authentication" in lowered
+        or "auth" in lowered
+    ):
+        error_type = FetchStatus.AUTH_ERROR
+    elif "connection" in lowered or "urlopen error" in lowered or "name or service not known" in lowered:
+        error_type = FetchStatus.NETWORK
+    else:
+        error_type = FetchStatus.SOURCE_UNAVAILABLE
+
+    return FetchStatus(
+        ok=False,
+        error_type=error_type,
+        message=normalized,
+        latency_ms=latency_ms,
+        source=source,
+    )
+
+
+def _status_from_command_result(result: CommandResult, source: str = "", latency_ms: float = 0.0) -> FetchStatus:
+    if result.timed_out:
+        message = result.stderr or result.stdout or "command timed out"
+        return FetchStatus(
+            ok=False,
+            error_type=FetchStatus.TIMEOUT,
+            message=message,
+            latency_ms=latency_ms,
+            source=source,
+        )
+    if result.returncode == 127:
+        message = result.stderr or result.stdout or "command not found"
+        return FetchStatus(
+            ok=False,
+            error_type=FetchStatus.COMMAND_NOT_FOUND,
+            message=message,
+            latency_ms=latency_ms,
+            source=source,
+        )
+    if result.returncode == 126:
+        message = result.stderr or result.stdout or "permission denied"
+        return FetchStatus(
+            ok=False,
+            error_type=FetchStatus.PERMISSION_DENIED,
+            message=message,
+            latency_ms=latency_ms,
+            source=source,
+        )
+    diagnostic = result.stderr or result.stdout
+    return _status_from_error_message(diagnostic, source=source, latency_ms=latency_ms)
 
 
 def json_out(cmd: str, timeout: int = 25) -> Optional[dict | list]:
-    raw = run(cmd, timeout=timeout)
-    if not raw or raw.startswith("[ERROR]"):
+    result = run(cmd, timeout=timeout)
+    raw = result.stdout
+    if result.returncode not in (0, None) or result.timed_out or not raw:
         return None
     try:
         return json.loads(raw)
@@ -87,15 +193,14 @@ def json_out_safe(cmd: str, timeout: int = 25, source: str = "") -> tuple[Option
     """Return (data_or_None, status). Backwards-compatible with json_out."""
     t0 = time.time()
     try:
-        raw = run(cmd, timeout=timeout)
-        if not raw or raw.startswith("[ERROR]"):
+        result = run(cmd, timeout=timeout)
+        raw = result.stdout
+        if result.returncode not in (0,) or result.timed_out or not raw:
             latency = (time.time() - t0) * 1000
-            return None, FetchStatus(
-                ok=False,
-                error_type=FetchStatus.COMMAND_NOT_FOUND,
-                message=raw.replace("[ERROR] ", ""),
-                latency_ms=latency,
+            return None, _status_from_command_result(
+                result,
                 source=source,
+                latency_ms=latency,
             )
         data = json.loads(raw)
         latency = (time.time() - t0) * 1000

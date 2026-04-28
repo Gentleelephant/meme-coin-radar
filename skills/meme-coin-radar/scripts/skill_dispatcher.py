@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from typing import Any, Optional
 
@@ -22,6 +21,7 @@ try:
         futures_klines,
         futures_new_algo_order,
         futures_new_order,
+        futures_tradable_symbols,
         futures_test_order,
         futures_ticker,
         open_interest as binance_open_interest,
@@ -43,6 +43,7 @@ except ImportError:
         futures_klines,
         futures_new_algo_order,
         futures_new_order,
+        futures_tradable_symbols,
         futures_test_order,
         futures_ticker,
         open_interest as binance_open_interest,
@@ -169,16 +170,21 @@ def binance_alpha() -> dict:
     return alpha_token_list()
 
 
-def binance_ticker(symbol: str) -> Optional[dict]:
+def binance_ticker(symbol: str) -> tuple[Optional[dict], FetchStatus]:
     return futures_ticker(symbol)
 
 
-def binance_funding(symbol: str) -> Optional[dict]:
+def binance_funding(symbol: str) -> tuple[Optional[dict], FetchStatus]:
     return futures_funding(symbol)
 
 
-def binance_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[list]:
+def binance_klines(symbol: str, interval: str = "1h", limit: int = 50) -> tuple[Optional[list], FetchStatus]:
     return futures_klines(symbol, interval=interval, limit=limit)
+
+
+def binance_tradable_symbols() -> tuple[set[str], dict[str, Any]]:
+    symbols, status = futures_tradable_symbols()
+    return symbols, _status_payload(status)
 
 
 def binance_exchange_info(symbol: str) -> Optional[dict]:
@@ -253,55 +259,28 @@ def okx_token_snapshot(address: str, chain: str | None = None) -> dict[str, Any]
     return onchainos_token_snapshot_provider(address=address, chain=chain)
 
 
-def binance_smartmoney_signals(chain: str = "sol", page: int = 1, page_size: int = 50) -> list:
-    chain_map = {"sol": "CT_501", "bsc": "56", "solana": "CT_501"}
-    chain_id = chain_map.get(chain.lower(), "CT_501")
-    try:
-        request = urllib.request.Request(
-            "https://web3.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/web/signal/smart-money/ai",
-            data=json.dumps({
-                "smartSignalType": "",
-                "page": page,
-                "pageSize": page_size,
-                "chainId": chain_id,
-            }).encode(),
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "binance-web3/1.1 (Skill)",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            data = json.loads(response.read())
-        if data.get("success"):
-            return data.get("data", [])
-    except Exception:
-        pass
-    return []
-
-
 def _fetch_one_coin(symbol: str) -> tuple:
     """Fetch all data for a single coin with status tracking and timestamps."""
     status_map: dict[str, Any] = {}
     now = int(time.time())
 
-    ticker = binance_ticker(symbol)
-    status_map["ticker"] = {"ok": ticker is not None, "source": "binance", "fetched_at": now}
+    ticker, ticker_status = binance_ticker(symbol)
+    status_map["ticker"] = {**ticker_status.to_dict(), "fetched_at": now}
 
-    funding = binance_funding(symbol)
-    status_map["funding"] = {"ok": funding is not None, "source": "binance", "fetched_at": now}
+    funding, funding_status = binance_funding(symbol)
+    status_map["funding"] = {**funding_status.to_dict(), "fetched_at": now}
 
-    klines = binance_klines(symbol, interval="1h", limit=50)
-    status_map["klines"] = {"ok": klines is not None, "source": "binance", "fetched_at": now}
+    klines, klines_status = binance_klines(symbol, interval="1h", limit=50)
+    status_map["klines"] = {**klines_status.to_dict(), "fetched_at": now}
 
-    klines_4h = binance_klines(symbol, interval="4h", limit=50)
-    status_map["klines_4h"] = {"ok": klines_4h is not None, "source": "binance", "fetched_at": now}
+    klines_4h, klines_4h_status = binance_klines(symbol, interval="4h", limit=50)
+    status_map["klines_4h"] = {**klines_4h_status.to_dict(), "fetched_at": now}
 
-    klines_1d = binance_klines(symbol, interval="1d", limit=8)
-    status_map["klines_1d"] = {"ok": klines_1d is not None, "source": "binance", "fetched_at": now}
+    klines_1d, klines_1d_status = binance_klines(symbol, interval="1d", limit=8)
+    status_map["klines_1d"] = {**klines_1d_status.to_dict(), "fetched_at": now}
 
-    oi = binance_open_interest(symbol)
-    status_map["oi"] = oi.get("status", {"ok": oi.get("error_type") is None, "source": "binance", "fetched_at": now})
+    oi, oi_status = binance_open_interest(symbol)
+    status_map["oi"] = {**oi_status.to_dict(), "fetched_at": now}
 
     return symbol, {
         "ticker": ticker,
@@ -360,9 +339,9 @@ __all__ = [
     "binance_klines",
     "binance_new_algo_order",
     "binance_new_order",
-    "binance_smartmoney_signals",
     "binance_test_order",
     "binance_ticker",
+    "binance_tradable_symbols",
     "okx_account_equity",
     "okx_btc_status",
     "okx_funding_rate",

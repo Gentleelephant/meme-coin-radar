@@ -208,10 +208,10 @@ def discover_candidates(
         _ensure(
             str(sym),
             "alpha_hot",
-            tradable=True,
-            mtype="cex_perp",
+            tradable=False,
+            mtype="watchlist",
             strategy_mode="majors_cex" if str(sym).upper() in major_set else "meme_onchain",
-            meta={"binance_alpha_symbol": str(sym).upper(), "alpha_data": data},
+            meta={"binance_alpha_symbol": str(sym).upper(), "alpha_data": data, "market_profile": "alpha_watchlist"},
         )
 
     for sym in key_coins:
@@ -219,8 +219,8 @@ def discover_candidates(
         _ensure(
             symbol,
             "key_coins",
-            tradable=True,
-            mtype="cex_perp",
+            tradable=False,
+            mtype="watchlist",
             strategy_mode="majors_cex" if symbol in major_set else "meme_onchain",
             meta={"market_profile": "major" if symbol in major_set else "watchlist"},
         )

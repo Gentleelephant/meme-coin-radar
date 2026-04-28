@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import time
 from typing import Any
 
@@ -12,6 +13,17 @@ def _quote(value: str) -> str:
 
 def _cmd(command: str) -> str:
     return f"{command} --format json"
+
+
+def _preflight_status(source: str) -> FetchStatus | None:
+    if shutil.which("onchainos") is None:
+        return FetchStatus(
+            ok=False,
+            error_type=FetchStatus.COMMAND_NOT_FOUND,
+            message="onchainos CLI not installed or not in PATH",
+            source=source,
+        )
+    return None
 
 
 def _unwrap_items(data: Any) -> list[dict[str, Any]]:
@@ -44,6 +56,9 @@ def hot_tokens(
     time_frame: int = 4,
     rank_by: int | None = None,
 ) -> tuple[list[dict[str, Any]], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-hot-tokens")
+    if preflight is not None:
+        return [], preflight
     parts = [f"onchainos token hot-tokens --ranking-type {ranking_type}", f"--limit {limit}", f"--time-frame {time_frame}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -59,6 +74,9 @@ def signal_list(
     limit: int = 20,
     min_address_count: int | None = None,
 ) -> tuple[list[dict[str, Any]], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-signal-list")
+    if preflight is not None:
+        return [], preflight
     parts = [f'onchainos signal list --chain "{_quote(chain)}"', f'--wallet-type "{_quote(wallet_type)}"', f"--limit {limit}"]
     if min_address_count is not None:
         parts.append(f"--min-address-count {min_address_count}")
@@ -72,6 +90,9 @@ def tracker_activities(
     trade_type: int = 1,
     limit: int = 50,
 ) -> tuple[list[dict[str, Any]], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-tracker-activities")
+    if preflight is not None:
+        return [], preflight
     parts = [f"onchainos tracker activities --tracker-type {tracker_type}", f"--trade-type {trade_type}", f"--limit {limit}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -80,6 +101,9 @@ def tracker_activities(
 
 
 def token_price_info(address: str, chain: str | None = None) -> tuple[dict[str, Any], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-token-price-info")
+    if preflight is not None:
+        return {}, preflight
     parts = [f'onchainos token price-info --address "{_quote(address)}"']
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -88,6 +112,9 @@ def token_price_info(address: str, chain: str | None = None) -> tuple[dict[str, 
 
 
 def token_holders(address: str, chain: str | None = None, tag_filter: int | None = None, limit: int = 100) -> tuple[list[dict[str, Any]], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-token-holders")
+    if preflight is not None:
+        return [], preflight
     parts = [f'onchainos token holders --address "{_quote(address)}"', f"--limit {limit}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -98,6 +125,9 @@ def token_holders(address: str, chain: str | None = None, tag_filter: int | None
 
 
 def token_advanced_info(address: str, chain: str | None = None) -> tuple[dict[str, Any], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-token-advanced-info")
+    if preflight is not None:
+        return {}, preflight
     parts = [f'onchainos token advanced-info --address "{_quote(address)}"']
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -106,6 +136,9 @@ def token_advanced_info(address: str, chain: str | None = None) -> tuple[dict[st
 
 
 def token_cluster_overview(address: str, chain: str | None = None) -> tuple[dict[str, Any], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-token-cluster-overview")
+    if preflight is not None:
+        return {}, preflight
     parts = [f'onchainos token cluster-overview --address "{_quote(address)}"']
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -114,6 +147,9 @@ def token_cluster_overview(address: str, chain: str | None = None) -> tuple[dict
 
 
 def token_cluster_top_holders(address: str, chain: str | None = None, range_filter: int = 1) -> tuple[dict[str, Any], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-token-cluster-top-holders")
+    if preflight is not None:
+        return {}, preflight
     parts = [f'onchainos token cluster-top-holders --address "{_quote(address)}"', f"--range-filter {range_filter}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
@@ -122,6 +158,9 @@ def token_cluster_top_holders(address: str, chain: str | None = None, range_filt
 
 
 def token_trades(address: str, chain: str | None = None, limit: int = 100) -> tuple[list[dict[str, Any]], FetchStatus]:
+    preflight = _preflight_status("okx-onchainos-token-trades")
+    if preflight is not None:
+        return [], preflight
     parts = [f'onchainos token trades --address "{_quote(address)}"', f"--limit {limit}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')

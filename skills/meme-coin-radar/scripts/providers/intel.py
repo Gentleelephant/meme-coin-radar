@@ -222,7 +222,7 @@ def fetch_panews_polymarket_snapshot(lang: str = "en") -> dict[str, Any]:
 
 def fetch_surf_news(symbol: str, take: int = 5) -> dict[str, Any]:
     if shutil.which(SURF_BIN) is None:
-        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="surf CLI not installed", source="surf-news")
+        status = FetchStatus(ok=False, error_type=FetchStatus.OPTIONAL_UNAVAILABLE, message="surf CLI not installed", source="surf-news")
         return _provider_result({"article_count": 0, "headlines": [], "event_tags": []}, status, confidence=0.0)
     raw, status = _run_command(
         [SURF_BIN, "search-news", "--q", symbol, "--limit", str(take), "--json"],
@@ -241,7 +241,7 @@ def fetch_surf_news(symbol: str, take: int = 5) -> dict[str, Any]:
 
 def fetch_surf_social(symbol: str) -> dict[str, Any]:
     if shutil.which(SURF_BIN) is None:
-        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="surf CLI not installed", source="surf-social")
+        status = FetchStatus(ok=False, error_type=FetchStatus.OPTIONAL_UNAVAILABLE, message="surf CLI not installed", source="surf-social")
         return _provider_result({"mentions_24h": 0, "mindshare_score": None, "sentiment_score": None, "kol_mentions": 0}, status, confidence=0.0)
     raw, status = _run_command(
         [SURF_BIN, "search-social", "--q", symbol, "--limit", "10", "--json"],
@@ -353,6 +353,8 @@ def fetch_social_intel(
         social_growth_24h = 0.0
         heat_direction = "unknown"
 
+    keyword_set = {str(keyword).strip().lower() for keyword in shared_keywords if str(keyword).strip()}
+
     merged = {
         "symbol": symbol,
         "chain": chain,
@@ -370,7 +372,7 @@ def fetch_social_intel(
         "global_news_event_tags": (surf_news.get("data") or {}).get("event_tags") or [],
         "panews_article_count_24h": int((panews_news.get("data") or {}).get("article_count") or 0),
         "panews_latest_headlines": panews_articles,
-        "panews_hot_rank": 1 if symbol.lower() in " ".join(shared_keywords).lower() else None,
+        "panews_hot_rank": 1 if symbol.lower() in keyword_set else None,
         "panews_topic_tags": [],
         "panews_editorial_keywords": shared_keywords,
         "panews_event_count_7d": int((panews_events.get("data") or {}).get("event_count") or 0),

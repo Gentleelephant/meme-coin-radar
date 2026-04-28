@@ -29,6 +29,15 @@
 python3 skills/meme-coin-radar/scripts/auto-run.py
 ```
 
+控制循环入口：
+
+```bash
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_only
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_and_trade
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py reconcile_and_update_metrics
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py strategy_review
+```
+
 快速查看当前模拟盘状态：
 
 ```bash
@@ -53,7 +62,20 @@ python3 skills/meme-coin-radar/scripts/paper_status.py
 | `09_fetch_status.json` | 多源获取状态 |
 | `11_onchain_snapshots.json` | 链上快照集合 |
 | `12_execution_results.json` | Paper 执行结果 |
+| `14_paper_metrics.json` | 当前胜率、PnL 与分组指标 |
 | `15_social_intel.json` | 社交/新闻情报快照 |
+| `16_strategy_feedback.json` | 本次扫描生成的策略反馈摘要 |
+
+`history/` 下还会持续维护：
+
+| 文件 | 含义 |
+|---|---|
+| `paper_positions.json` | 当前 open / pending 持仓 |
+| `paper_orders.json` | 当前活动订单 |
+| `paper_account.json` | 模拟账户权益与保证金 |
+| `paper_closed_positions.jsonl` | 已平仓交易流水 |
+| `paper_metrics.json` | 累计胜率与分组统计 |
+| `paper_strategy_feedback.json` | 给 agent 使用的策略反馈文件 |
 
 ## 常用环境变量
 

@@ -61,6 +61,10 @@ except ImportError:
 # ────────────────────────────────────────────────
 # Helper: EMA / ATR / Trend
 # ────────────────────────────────────────────────
+KLINE_CLOSE_INDEX = 3
+KLINE_VOLUME_INDEX = 4
+
+
 def calc_ema(prices: list[float], period: int) -> float | None:
     if not prices or len(prices) < period:
         return None
@@ -76,7 +80,7 @@ def calc_atr14(klines) -> float | None:
         return None
     trs = []
     for i in range(1, len(klines)):
-        high, low, prev_close = klines[i][1], klines[i][2], klines[i - 1][3]
+        high, low, prev_close = klines[i][1], klines[i][2], klines[i - 1][KLINE_CLOSE_INDEX]
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         trs.append(tr)
     return sum(trs[-14:]) / 14 if len(trs) >= 14 else None
@@ -103,7 +107,7 @@ def _klines_meta(klines, price: float) -> dict[str, Any]:
     meta = {"ema20": None, "ema50": None, "atr14": None, "atr_pct": None, "trend": None, "closes": []}
     if not klines:
         return meta
-    closes = [k[3] for k in klines]
+    closes = [k[KLINE_CLOSE_INDEX] for k in klines]
     meta["closes"] = closes
     ema20 = calc_ema(closes, 20)
     ema50 = calc_ema(closes, 50)
@@ -230,15 +234,44 @@ def build_trade_plan(
     price = float(meta.get("price") or 0)
     atr_pct = meta.get("atr_pct")
     direction = result.get("direction")
+    strategy_mode = str(result.get("strategy_mode") or meta.get("strategy_mode") or "meme_onchain")
+    trend_1h = str(meta.get("trend") or "")
+    trend_4h = str(meta.get("trend_4h") or "")
 
     if price <= 0 or direction not in ("long", "short"):
         return None
 
-    base_risk = atr_pct * settings.stop_loss_atr_mult if atr_pct else 0.05
+    is_major = strategy_mode == "majors_cex"
+    stop_loss_atr_mult = settings.majors_stop_loss_atr_mult if is_major else settings.stop_loss_atr_mult
+    entry_buffer_atr_mult = settings.majors_entry_buffer_atr_mult if is_major else settings.entry_buffer_atr_mult
+    take_profit_1_r_mult = settings.majors_take_profit_1_r_mult if is_major else settings.take_profit_1_r_mult
+    take_profit_2_r_mult = settings.majors_take_profit_2_r_mult if is_major else settings.take_profit_2_r_mult
+    min_rr = settings.majors_min_rr if is_major else settings.min_rr
+    tp1_fraction_setting = settings.majors_tp1_fraction if is_major else settings.tp1_fraction
+    trailing_mode_setting = settings.majors_trailing_mode if is_major else settings.trailing_mode
+    trailing_callback_rate = settings.majors_trailing_callback_rate if is_major else settings.trailing_callback_rate
+    break_even_offset_bps = settings.majors_break_even_offset_bps if is_major else settings.break_even_offset_bps
+
+    if is_major:
+        plan_profile = (
+            "majors_trend_follow"
+            if trend_1h == "bullish" and trend_4h in {"bullish", "weak_recovery"}
+            else "majors_breakout_confirmed"
+        )
+        why_this_plan = (
+            "1H/4H 趋势共振较强，优先采用顺势跟随模板，先落袋一部分利润，再让剩余仓位跟随。"
+            if plan_profile == "majors_trend_follow"
+            else "主流币处于突破确认区，先用更紧的入场缓冲和更保守的 TP1 锁定利润。"
+        )
+    else:
+        plan_profile = "meme_breakout_follow"
+        why_this_plan = "链上和情绪强度优先，采用更宽的波动容忍和双目标止盈结构。"
+
+    base_risk = atr_pct * stop_loss_atr_mult if atr_pct else 0.05
     risk_pct = min(max(base_risk, 0.035), 0.10)
-    entry_buffer = min(max(risk_pct * settings.entry_buffer_atr_mult, 0.008), 0.025)
-    tp1_pct = max(risk_pct * settings.take_profit_1_r_mult, 0.05)
-    tp2_pct = max(risk_pct * settings.take_profit_2_r_mult, 0.08)
+    entry_buffer = min(max(risk_pct * entry_buffer_atr_mult, 0.006 if is_major else 0.008), 0.018 if is_major else 0.025)
+    tp1_pct = max(risk_pct * take_profit_1_r_mult, 0.035 if is_major else 0.05)
+    tp2_pct = max(risk_pct * take_profit_2_r_mult, 0.06 if is_major else 0.08)
 
     if direction == "long":
         entry_low = price * (1 - entry_buffer)
@@ -260,10 +293,10 @@ def build_trade_plan(
     rr = reward_distance / risk_distance if risk_distance > 0 else 0.0
 
     setup_label = "ready" if result.get("can_enter") else "watch"
-    if rr < settings.min_rr:
+    if rr < min_rr:
         setup_label = "watch"
         result["can_enter_rr_blocked"] = True
-        result.setdefault("risk_notes", []).append(f"R:R={rr:.2f}<{settings.min_rr:.2f}，降级观察")
+        result.setdefault("risk_notes", []).append(f"R:R={rr:.2f}<{min_rr:.2f}，降级观察")
 
     # Position sizing per Obsidian formula
     position_size_usd: float | None = None
@@ -272,10 +305,13 @@ def build_trade_plan(
     quantity = None
     if equity > 0 and risk_distance > 0:
         total_score = result.get("final_score", result.get("total", 0))
-        risk_ratio = 0.03 if total_score >= 85 else (0.02 if total_score >= 75 else 0.01)
+        if is_major:
+            risk_ratio = 0.02 if total_score >= 85 else (0.015 if total_score >= 75 else 0.008)
+        else:
+            risk_ratio = 0.03 if total_score >= 85 else (0.02 if total_score >= 75 else 0.01)
         stop_pct = risk_distance / mid_entry if mid_entry > 0 else risk_pct
         position_size_usd = equity * risk_ratio / stop_pct
-        leverage = 5 if total_score >= 80 else (3 if total_score >= 65 else 1)
+        leverage = 3 if is_major and total_score >= 80 else (2 if is_major and total_score >= 65 else (5 if total_score >= 80 else (3 if total_score >= 65 else 1)))
         # Round to clean numbers
         if position_size_usd >= 1000:
             position_size_usd = round(position_size_usd, -2)
@@ -301,17 +337,17 @@ def build_trade_plan(
     entry_side = "BUY" if direction == "long" else "SELL"
     exit_side = "SELL" if direction == "long" else "BUY"
     quantity = quantity if quantity is not None else (position_size_usd / price if position_size_usd and price > 0 else 0.0)
-    tp1_fraction = min(max(settings.tp1_fraction, 0.0), 1.0)
+    tp1_fraction = min(max(tp1_fraction_setting, 0.0), 1.0)
     split_quantity = quantity * tp1_fraction if quantity else 0.0
     remaining_quantity = max((quantity or 0.0) - split_quantity, 0.0)
-    trailing_mode = settings.trailing_mode.strip().lower()
+    trailing_mode = trailing_mode_setting.strip().lower()
     trailing_enabled = trailing_mode in {"break_even", "callback"}
     stop_loss_order_type = "TRAILING_STOP_MARKET" if trailing_mode == "callback" else "STOP_MARKET"
     trailing_config = {
         "mode": trailing_mode,
         "activation": settings.trailing_activation,
-        "callback_rate": settings.trailing_callback_rate,
-        "break_even_offset_bps": settings.break_even_offset_bps,
+        "callback_rate": trailing_callback_rate,
+        "break_even_offset_bps": break_even_offset_bps,
         "enabled": trailing_enabled,
     }
 
@@ -331,6 +367,11 @@ def build_trade_plan(
         "quality_flags": quality_flags,
         "protection_required": settings.require_protection,
         "trailing_mode": trailing_mode,
+        "strategy_mode": strategy_mode,
+        "plan_profile": plan_profile,
+        "why_this_plan": why_this_plan,
+        "tp1_fraction": tp1_fraction,
+        "protection_strategy": trailing_mode if trailing_enabled else "fixed",
         "execution": {
             "symbol": f"{symbol}USDT" if symbol else "",
             "entry_side": entry_side,
@@ -354,7 +395,7 @@ def build_trade_plan(
                 "working_type": "MARK_PRICE",
                 "price_protect": True,
                 "activate_price": take_profit_1 if trailing_mode == "callback" and settings.trailing_activation == "tp1_hit" else mid_entry if trailing_mode == "callback" else None,
-                "callback_rate": settings.trailing_callback_rate if trailing_mode == "callback" else None,
+                "callback_rate": trailing_callback_rate if trailing_mode == "callback" else None,
                 "trailing": trailing_config,
             },
             "take_profit_orders": [
@@ -408,6 +449,7 @@ def score_candidate(
     strategy_mode: str = "meme_onchain",
     onchain_data: dict[str, Any] | None = None,
     social_intel: dict[str, Any] | None = None,
+    kline_source: str | None = None,
 ) -> dict[str, Any]:
     ticker = ticker or {}
     funding = funding or {}
@@ -470,14 +512,22 @@ def score_candidate(
     chg4h = to_float(price_info.get("priceChange4H"), default=None) if price_info else None
     if chg4h is None and klines_4h and len(klines_4h) >= 2:
         try:
-            prev_close = float(klines_4h[-2][3])
-            last_close = float(klines_4h[-1][3])
+            prev_close = float(klines_4h[-2][KLINE_CLOSE_INDEX])
+            last_close = float(klines_4h[-1][KLINE_CLOSE_INDEX])
             chg4h = (last_close - prev_close) / prev_close * 100 if prev_close > 0 else None
         except (IndexError, ValueError, TypeError):
             chg4h = None
 
     intraday_high = max(to_float(price_info.get("maxPrice")), to_float(ticker.get("high24h")))
-    intraday_low = max(to_float(price_info.get("minPrice")), 0.0)
+    intraday_low_candidates = [
+        value
+        for value in (
+            to_float(price_info.get("minPrice"), default=None),
+            to_float(ticker.get("low24h"), default=None),
+        )
+        if value is not None
+    ]
+    intraday_low = min(intraday_low_candidates) if intraday_low_candidates else 0.0
     day_pos = safe_div(price - intraday_low, max(intraday_high - intraday_low, 0.0)) if intraday_high > intraday_low and price > 0 else None
 
     top10_ratio = normalize_ratio(advanced_info.get("top10HoldPercent"))
@@ -593,7 +643,7 @@ def score_candidate(
 
     if volume_vs_7d is None and klines_1d and len(klines_1d) >= 8:
         try:
-            vols = [float(k[4]) for k in klines_1d[-8:]]
+            vols = [float(k[KLINE_VOLUME_INDEX]) for k in klines_1d[-8:]]
             if len(vols) >= 8 and vols[-1] > 0:
                 avg_7d = sum(vols[:-1]) / 7
                 if avg_7d > 0:
@@ -844,6 +894,6 @@ def score_candidate(
             "social_intel": social_intel,
             "ticker_source": ticker.get("source", "binance") if ticker else "",
             "funding_source": funding.get("source", "binance") if funding else "",
-            "kline_source": ticker.get("source", "binance") if (ticker and klines) else "",
+            "kline_source": (kline_source or ticker.get("source", "binance")) if klines else "",
         },
     }

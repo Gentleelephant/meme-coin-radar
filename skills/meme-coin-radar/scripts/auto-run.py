@@ -27,11 +27,13 @@ from candidate_discovery import discover_candidates, get_cex_symbols, prioritize
 from execution_binance import execute_paper_bracket
 from paper_analytics import compute_metrics
 from paper_reconciler import reconcile_all_positions, ticks_from_klines
+from paper_strategy_feedback import save_strategy_feedback
 from providers.intel import build_shared_intel_context, fetch_social_intel
 from radar_logic import build_trade_plan, score_candidate
 from skill_dispatcher import (
     batch_binance,
     binance_alpha,
+    binance_tradable_symbols,
     okx_account_equity,
     okx_btc_status,
     okx_hot_tokens,
@@ -93,6 +95,64 @@ def _prefix_status_fields(status_map: dict[str, dict], prefix: str) -> dict[str,
     return {f"{prefix}{key}": value for key, value in (status_map or {}).items()}
 
 
+def _status_label(status: dict) -> str:
+    if not isinstance(status, dict):
+        return "unknown"
+    if status.get("ok"):
+        return "ok"
+    error_type = status.get("error_type") or "unknown"
+    message = str(status.get("message") or "").strip()
+    return f"{error_type}{f' ({message})' if message else ''}"
+
+
+def _print_onchain_diagnostics(status_map: dict[str, dict]) -> None:
+    issues = []
+    for name in ("hot_trending", "hot_x", "signals", "tracker"):
+        status = status_map.get(name) or {}
+        if not status.get("ok"):
+            issues.append(f"{name}={_status_label(status)}")
+    if issues:
+        print(f"  ⚠️ OnchainOS诊断: {'; '.join(issues)}")
+
+
+def _print_binance_batch_diagnostics(fetch_status: dict[str, dict], results: dict[str, dict]) -> None:
+    timed_out: list[str] = []
+    empty_assets: list[str] = []
+    partial_assets: list[str] = []
+
+    for symbol, status_map in fetch_status.items():
+        if symbol.startswith("__"):
+            continue
+        if isinstance(status_map, dict) and status_map.get("_batch_error") == "timeout":
+            timed_out.append(symbol)
+            continue
+        payload = results.get(symbol) or {}
+        available_count = sum(
+            1
+            for field in ("ticker", "funding", "klines", "klines_4h", "klines_1d")
+            if payload.get(field) is not None
+        )
+        if payload.get("oi") and isinstance(payload.get("oi"), dict) and payload["oi"].get("oi") is not None:
+            available_count += 1
+        if available_count == 0:
+            empty_assets.append(symbol)
+        elif available_count < 6:
+            partial_assets.append(symbol)
+
+    if timed_out:
+        preview = ", ".join(timed_out[:6])
+        suffix = "..." if len(timed_out) > 6 else ""
+        print(f"  ⚠️ Binance batch超时: {len(timed_out)} 个标的未在60秒内完成，例如 {preview}{suffix}")
+    if empty_assets:
+        preview = ", ".join(empty_assets[:6])
+        suffix = "..." if len(empty_assets) > 6 else ""
+        print(f"  ⚠️ Binance无返回数据: {len(empty_assets)} 个标的全部字段为空，例如 {preview}{suffix}")
+    if partial_assets:
+        preview = ", ".join(partial_assets[:6])
+        suffix = "..." if len(partial_assets) > 6 else ""
+        print(f"  ℹ️ Binance部分缺数: {len(partial_assets)} 个标的只有部分字段成功，例如 {preview}{suffix}")
+
+
 def _okx_attention_context(snapshot: dict) -> dict:
     signal_items = snapshot.get("signals", []) or []
     tracker_items = snapshot.get("tracker_items", []) or []
@@ -142,6 +202,16 @@ print(
     f"  OKX OnchainOS: trending={len(okx_hot_trending)}, "
     f"x_heat={len(okx_hot_x)}, signals={len(okx_signals)}, tracker={len(okx_tracker)}"
 )
+_print_onchain_diagnostics(
+    {
+        "hot_trending": okx_hot_trending_status,
+        "hot_x": okx_hot_x_status,
+        "signals": okx_signals_status,
+        "tracker": okx_tracker_status,
+    }
+)
+if okx_tracker_status.get("ok") and not okx_tracker:
+    print("  ℹ️ tracker=0: 当前筛选条件为 solana + smart_money + buy-only，可能是该时间窗内无匹配交易")
 
 # Step 0.75: Account equity
 print("[0.75] OKX 账户权益...")
@@ -169,6 +239,13 @@ if all_tickers:
     alt_rotation = alt_rotation_ratio > 0.20 and btc_dir != "up"
     print(f"  市场宽度: {len(strong_movers)}/{len(all_tickers)} 标的24h异动>15% (alt_rotation={alt_rotation})")
 
+print("[1c] Binance USDT 永续白名单...")
+binance_symbol_whitelist, binance_symbol_whitelist_status = binance_tradable_symbols()
+print(
+    f"  Binance whitelist: {len(binance_symbol_whitelist)} symbols "
+    f"[{'ok' if binance_symbol_whitelist_status.get('ok') else binance_symbol_whitelist_status.get('error_type', 'unknown')}]"
+)
+
 # Step 2: Unified candidate discovery (roadmap P0-3)
 print("[2] 候选发现层...")
 existing_positions = load_paper_positions(DATA_DIR)
@@ -183,8 +260,16 @@ candidates = discover_candidates(
     major_coins=list(SETTINGS.major_coins),
 )
 # P0-5: Asset mapping
-cex_symbol_list = [t["symbol"] for t in all_tickers]
+cex_symbol_list = sorted(binance_symbol_whitelist) if binance_symbol_whitelist else [t["symbol"] for t in all_tickers]
 enriched_candidates = apply_to_candidates(candidates, cex_symbol_list)
+for cand in enriched_candidates:
+    symbol = cand.get("symbol", "").upper()
+    has_binance_execution = symbol in binance_symbol_whitelist if binance_symbol_whitelist else cand.get("tradable_on_cex", False)
+    cand["has_binance_execution"] = has_binance_execution
+    if not has_binance_execution:
+        cand["tradable_on_cex"] = False
+        if cand.get("market_type") == "cex_perp":
+            cand["market_type"] = "watchlist"
 
 
 def _candidate_sort_key(candidate: dict) -> tuple:
@@ -206,6 +291,8 @@ onchain_candidates = [c for c in enriched_candidates if not c.get("tradable_on_c
 cex_symbols = get_cex_symbols(candidates)  # native tradable symbols from discovery layer
 mapped_cex_symbols = [c.get("symbol") for c in tradable_candidates if c.get("symbol")]
 cex_symbols = list(dict.fromkeys(cex_symbols + mapped_cex_symbols + existing_position_symbols))
+if binance_symbol_whitelist:
+    cex_symbols = [symbol for symbol in cex_symbols if symbol in binance_symbol_whitelist]
 
 print(f"  发现候选: CEX可交易={len(tradable_candidates)}, 链上观察={len(onchain_candidates)}")
 
@@ -255,6 +342,7 @@ bnc_results = bnc_batch["results"]
 fetch_status = bnc_batch.get("fetch_status", {})
 shared_intel_context = build_shared_intel_context(DATA_DIR, lang="en")
 fetch_status["__onchain_discovery__"] = {
+    "binance_tradable_symbols": binance_symbol_whitelist_status,
     "hot_trending": okx_hot_trending_status,
     "hot_x": okx_hot_x_status,
     "signals": okx_signals_status,
@@ -294,7 +382,14 @@ save(
                 "has_klines": value["klines"] is not None,
                 "has_klines_4h": value["klines_4h"] is not None,
                 "has_klines_1d": value["klines_1d"] is not None,
-                "has_oi": value["oi"] is not None,
+                "ticker_ok": bool((value.get("_status", {}).get("ticker") or {}).get("ok")),
+                "funding_ok": bool((value.get("_status", {}).get("funding") or {}).get("ok")),
+                "klines_ok": bool((value.get("_status", {}).get("klines") or {}).get("ok")),
+                "klines_4h_ok": bool((value.get("_status", {}).get("klines_4h") or {}).get("ok")),
+                "klines_1d_ok": bool((value.get("_status", {}).get("klines_1d") or {}).get("ok")),
+                "oi_ok": bool((value.get("_status", {}).get("oi") or {}).get("ok")),
+                "oi_value": (value.get("oi") or {}).get("oi"),
+                "oi_error_type": (value.get("_status", {}).get("oi") or {}).get("error_type"),
             }
             for key, value in bnc_results.items()
         },
@@ -309,6 +404,7 @@ scan_ts = int(datetime.now().timestamp())
 freshness_report = _data_freshness_report(fetch_status, scan_ts)
 freshness_summary = _format_freshness_summary(freshness_report)
 print(f"  {freshness_summary}")
+_print_binance_batch_diagnostics(fetch_status, bnc_results)
 
 # Step 2c: Reconcile existing paper positions
 reconcile_result = None
@@ -368,6 +464,7 @@ for cand in tradable_candidates:
         strategy_mode=cand.get("strategy_mode", "meme_onchain"),
         onchain_data=onchain_data,
         social_intel={},
+        kline_source=((provider_data.get("_status") or {}).get("klines") or {}).get("source"),
     )
     tradable_base_results.append((cand, provider_data, alpha, base_result))
 
@@ -450,6 +547,7 @@ for cand, provider_data, alpha, _base_result in tradable_base_results:
         strategy_mode=cand.get("strategy_mode", "meme_onchain"),
         onchain_data=onchain_data,
         social_intel=social_intel_map.get(coin, {}),
+        kline_source=((provider_data.get("_status") or {}).get("klines") or {}).get("source"),
     )
     result["name"] = coin
     result["candidate_sources"] = cand.get("candidate_sources", [])
@@ -547,6 +645,8 @@ elif recommendations:
 if paper_metrics is None:
     paper_metrics = compute_metrics(DATA_DIR, reconcile_result.get("account", {}) if reconcile_result else {}, load_paper_positions(DATA_DIR))
 save("14_paper_metrics.json", json.dumps(paper_metrics, indent=2, default=str, ensure_ascii=False))
+strategy_feedback = save_strategy_feedback(DATA_DIR)
+save("16_strategy_feedback.json", json.dumps(strategy_feedback, indent=2, default=str, ensure_ascii=False))
 
 if paper_metrics and paper_metrics.get("total_trades", 0) > 0:
     summary_lines.append(
@@ -595,16 +695,16 @@ report_lines = [
 
 if recommendations:
     report_lines += [
-        "| 排名 | 币种 | 方向 | OOS | ERS | 置信度 | 入场区间 | 止损 | 止盈1 | 止盈2 | 仓位建议 |",
-        "|---|---|---|---:|---:|---:|---|---|---|---|---|",
+        "| 排名 | 币种 | 模式 | 方向 | OOS | ERS | 入场区间 | 止损 | 止盈1 | 止盈2 | TP1分批 | 保护策略 | 仓位建议 |",
+        "|---|---|---|---|---:|---:|---|---|---|---|---:|---|---|",
     ]
     for index, item in enumerate(recommendations, 1):
         plan = item.get("trade_plan") or {}
         ps_text = f"${plan['position_size_usd']:,.0f} USDT" if plan.get("position_size_usd") else item.get("position_size", "N/A")
         report_lines.append(
-            f"| {index} | **{item['name']}** | {_direction_label(item)} | {item.get('oos', 0)} | {item.get('ers', 0)} | "
-            f"{item['confidence']:.0f} | ${plan.get('entry_low', 0):.6g} - ${plan.get('entry_high', 0):.6g} | "
-            f"${plan.get('stop_loss', 0):.6g} | ${plan.get('take_profit_1', 0):.6g} | ${plan.get('take_profit_2', 0):.6g} | {ps_text} |"
+            f"| {index} | **{item['name']}** | `{plan.get('plan_profile', item.get('strategy_mode', 'n/a'))}` | {_direction_label(item)} | {item.get('oos', 0)} | {item.get('ers', 0)} | "
+            f"${plan.get('entry_low', 0):.6g} - ${plan.get('entry_high', 0):.6g} | "
+            f"${plan.get('stop_loss', 0):.6g} | ${plan.get('take_profit_1', 0):.6g} | ${plan.get('take_profit_2', 0):.6g} | {plan.get('tp1_fraction', 0) * 100:.0f}% | `{plan.get('protection_strategy', plan.get('trailing_mode', 'fixed'))}` | {ps_text} |"
         )
     report_lines.append("")
 else:
@@ -617,8 +717,8 @@ if recommendations:
     report_lines += [
         "## 🧾 Paper Orders",
         "",
-        "| 币种 | 模式 | 状态 | 主单 | 止损 | 止盈 |",
-        "|---|---|---|---|---|---|",
+        "| 币种 | 模式 | 状态 | 主单 | 止损 | 止盈 | TP1分批 | 保护策略 |",
+        "|---|---|---|---|---|---|---:|---|",
     ]
     for item in recommendations:
         execution = item.get("execution_result") or {}
@@ -629,7 +729,8 @@ if recommendations:
         tp_summary = ", ".join(f"${order.get('stop_price', 0):.6g}" for order in tp_orders[:2]) if tp_orders else "—"
         report_lines.append(
             f"| **{item['name']}** | {execution.get('mode', execution_mode)} | {execution.get('status', 'pending')} | "
-            f"{entry_type} | ${((execution.get('stop_loss_order') or (intent.get('stop_loss_order') or {})).get('stop_price', 0)):.6g} | {tp_summary} |"
+            f"{entry_type} | ${((execution.get('stop_loss_order') or (intent.get('stop_loss_order') or {})).get('stop_price', 0)):.6g} | {tp_summary} | "
+            f"{plan.get('tp1_fraction', 0) * 100:.0f}% | `{plan.get('protection_strategy', plan.get('trailing_mode', 'fixed'))}` |"
         )
     report_lines.append("")
 
@@ -649,6 +750,16 @@ if paper_metrics:
         f"| Open Positions | {paper_metrics.get('open_positions', 0)} |",
         "",
     ]
+
+if strategy_feedback:
+    report_lines += [
+        "## 🧠 Strategy Feedback",
+        "",
+        f"- Closed trades: `{strategy_feedback.get('total_closed_trades', 0)}`",
+    ]
+    for suggestion in (strategy_feedback.get("suggestions") or [])[:3]:
+        report_lines.append(f"- {suggestion.get('message')}")
+    report_lines.append("")
 
 if watch_only_items:
     report_lines += [
@@ -709,6 +820,10 @@ for index, item in enumerate(top_candidates[:3]):
     ]
     if plan.get("rr") is not None:
         report_lines.append(f"- R:R: `{plan['rr']:.2f}`")
+    if plan.get("plan_profile"):
+        report_lines.append(f"- 计划模板: `{plan['plan_profile']}`")
+    if plan.get("why_this_plan"):
+        report_lines.append(f"- 计划原因: {plan['why_this_plan']}")
     for reason in item.get("hit_rules", [])[:4]:
         report_lines.append(f"- ✅ {reason}")
     for note in item.get("risk_notes", [])[:3]:
@@ -718,8 +833,9 @@ for index, item in enumerate(top_candidates[:3]):
     if plan:
         report_lines.append(f"- 入场区间: `${plan.get('entry_low', 0):.6g} - ${plan.get('entry_high', 0):.6g}`")
         report_lines.append(f"- 止损: `${plan.get('stop_loss', 0):.6g}`")
-        report_lines.append(f"- 止盈1: `${plan.get('take_profit_1', 0):.6g}`")
-        report_lines.append(f"- 止盈2: `${plan.get('take_profit_2', 0):.6g}`")
+        report_lines.append(f"- 止盈1: `${plan.get('take_profit_1', 0):.6g}`（平仓 `{plan.get('tp1_fraction', 0) * 100:.0f}%`）")
+        report_lines.append(f"- 止盈2: `${plan.get('take_profit_2', 0):.6g}`（剩余仓位）")
+        report_lines.append(f"- 保护策略: `{plan.get('protection_strategy', plan.get('trailing_mode', 'fixed'))}`")
     report_lines.append("")
 
 report_lines += [
