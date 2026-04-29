@@ -1,20 +1,22 @@
 ---
 name: meme-coin-radar
-description: "妖币雷达 Phase 3.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
+description: "妖币雷达 v3.1.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
 tags: ["crypto", "meme-coin", "okx", "onchainos", "binance", "alpha", "paper-trade", "smart-money", "sol", "bnb"]
 category: crypto-trading
 license: MIT
 author: hermes
-version: "3.0.0"
+version: "3.1.0"
 metadata:
-  phase: "3.0"
+  phase: "3.1"
   data_sources: ["okx-onchainos", "binance-cli", "binance-alpha"]
   scoring_model: "OOS + ERS + final decision"
   output: "analysis report + raw data to $XDG_STATE_HOME/meme-coin-radar/ or ~/.local/state/meme-coin-radar/ (fallback: system temp dir)"
   auto_script: "skills/meme-coin-radar/scripts/auto-run.py"
 ---
 
-# 妖币雷达 Phase 3.0
+# 妖币雷达 v3.1.0
+
+> 单一版本源：`skills/meme-coin-radar/VERSION`
 
 > 定位：先用 `OKX OnchainOS` 找链上热点和结构信号，再用 `Binance Alpha + Futures` 判断能否承接到模拟交易。
 
@@ -103,6 +105,7 @@ python3 skills/meme-coin-radar/scripts/auto-run.py
 
 - `report.md`
 - `result.json`
+- `00_scan_meta.json`
 - `00_btc_status.json`
 - `01_all_tickers.json`
 - `02_binance_batch.json`

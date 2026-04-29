@@ -42,9 +42,11 @@ from skill_dispatcher import (
     okx_token_snapshot,
     okx_tracker_activities,
 )
+from versioning import load_project_version
 
 
 SETTINGS = load_settings()
+PROJECT_VERSION = load_project_version()
 DATA_DIR = ensure_output_dir(SETTINGS.output_dir)
 TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 SCAN_DIR = DATA_DIR / f"scan_{TS}"
@@ -163,7 +165,7 @@ def _okx_attention_context(snapshot: dict) -> dict:
     }
 
 
-print("=== 妖币雷达 Phase 3.0 扫描（OnchainOS + Alpha + Paper Trade）===")
+print(f"=== 妖币雷达 v{PROJECT_VERSION} 扫描（OnchainOS + Alpha + Paper Trade）===")
 print(f"时间: {TS}")
 
 # Step 0: BTC 大盘
@@ -602,6 +604,7 @@ for item in top_candidates[:3]:
 top_ready = recommendations[:3]
 top_watch = [item for item in valid if not item.get("can_enter")][:3]
 summary_lines = [
+    f"- 当前版本 `v{PROJECT_VERSION}`。",
     f"- 扫描候选 {len(scored)} 个，进入观察池 {len(valid)} 个，可执行建议 {len(recommendations)} 个。",
     f"- 市场环境判断为 `{btc_dir}`，BTC 24h 涨跌 `{btc_chg:+.2f}%`，当前偏向 `{market_bias}`。",
     f"- {freshness_summary}。",
@@ -672,8 +675,9 @@ def _direction_label(item: dict) -> str:
 
 
 report_lines = [
-    "# 🦊 妖币雷达 Phase 3.0 扫描报告",
+    f"# 🦊 妖币雷达 v{PROJECT_VERSION} 扫描报告",
     f"> 扫描时间：{TS}",
+    f"> 版本：`v{PROJECT_VERSION}`",
     "> **评分主轴**：`Onchain Opportunity Score (OOS)` + `Execution Readiness Score (ERS)`，以 `OKX OnchainOS` 为主，`Binance Alpha` 为补强，`Binance 模拟盘` 为执行承接。",
     "",
     "## Executive Summary",
@@ -882,7 +886,7 @@ report_lines += [
     "",
     "*⚠️ 本报告仅供研究与模拟验证，不构成投资建议。*",
     f"*数据路径：{SCAN_DIR}/*",
-    f"*Phase 3.0 — {datetime.now().strftime('%Y-%m-%d')}*",
+    f"*Version {PROJECT_VERSION} — {datetime.now().strftime('%Y-%m-%d')}*",
 ]
 
 report_path = SCAN_DIR / "report.md"
@@ -893,6 +897,7 @@ json_results = []
 for item in scored:
     plan = item.get("trade_plan")
     json_results.append({
+        "radar_version": PROJECT_VERSION,
         "symbol": item.get("symbol", item.get("name", "")),
         "decision": item["decision"],
         "final_score": item.get("final_score", item.get("total", 0)),
@@ -924,8 +929,21 @@ for item in scored:
     })
 
 save("result.json", json.dumps(json_results, indent=2, ensure_ascii=False, default=str))
+save(
+    "00_scan_meta.json",
+    json.dumps(
+        {
+            "radar_version": PROJECT_VERSION,
+            "scan_timestamp": TS,
+            "scan_dir": str(SCAN_DIR),
+        },
+        indent=2,
+        ensure_ascii=False,
+        default=str,
+    ),
+)
 
-print("=== 妖币雷达 Phase 3.0 扫描完成 ===")
+print(f"=== 妖币雷达 v{PROJECT_VERSION} 扫描完成 ===")
 print(f"目录: {SCAN_DIR}")
 print(f"报告: {report_path}")
 print(f"JSON: {SCAN_DIR / 'result.json'}")
