@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from typing import Any
 
-from .common import FetchStatus, json_out_safe
+from .common import FetchStatus, run
 
 
 def _quote(value: str) -> str:
@@ -12,7 +13,48 @@ def _quote(value: str) -> str:
 
 
 def _cmd(command: str) -> str:
+    return command
+
+
+def _legacy_json_cmd(command: str) -> str:
     return f"{command} --format json"
+
+
+def _json_command(command: str, timeout: int, source: str) -> tuple[Any, FetchStatus]:
+    candidates = (_cmd(command), _legacy_json_cmd(command))
+    last_status = FetchStatus(ok=False, error_type=FetchStatus.SOURCE_UNAVAILABLE, message="empty response", source=source)
+
+    for index, candidate in enumerate(candidates):
+        started_at = time.time()
+        result = run(candidate, timeout=timeout)
+        latency_ms = (time.time() - started_at) * 1000
+        raw = result.stdout
+
+        if result.returncode not in (0,) or result.timed_out or not raw:
+            message = result.stderr or result.stdout or ("command timed out" if result.timed_out else "empty response")
+            if index == 1 and "unexpected argument '--format' found" in message:
+                continue
+            last_status = FetchStatus(
+                ok=False,
+                error_type=FetchStatus.TIMEOUT if result.timed_out else FetchStatus.SOURCE_UNAVAILABLE,
+                message=message,
+                latency_ms=latency_ms,
+                source=source,
+            )
+            continue
+
+        try:
+            return json.loads(raw), FetchStatus(ok=True, latency_ms=latency_ms, source=source)
+        except json.JSONDecodeError as exc:
+            last_status = FetchStatus(
+                ok=False,
+                error_type=FetchStatus.PARSE_ERROR,
+                message=f"JSON parse error: {exc}",
+                latency_ms=latency_ms,
+                source=source,
+            )
+
+    return None, last_status
 
 
 def _preflight_status(source: str) -> FetchStatus | None:
@@ -64,7 +106,7 @@ def hot_tokens(
         parts.append(f'--chain "{_quote(chain)}"')
     if rank_by is not None:
         parts.append(f"--rank-by {rank_by}")
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=25, source="okx-onchainos-hot-tokens")
+    data, status = _json_command(" ".join(parts), timeout=25, source="okx-onchainos-hot-tokens")
     return _unwrap_items(data), status
 
 
@@ -80,7 +122,7 @@ def signal_list(
     parts = [f'onchainos signal list --chain "{_quote(chain)}"', f'--wallet-type "{_quote(wallet_type)}"', f"--limit {limit}"]
     if min_address_count is not None:
         parts.append(f"--min-address-count {min_address_count}")
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=25, source="okx-onchainos-signal-list")
+    data, status = _json_command(" ".join(parts), timeout=25, source="okx-onchainos-signal-list")
     return _unwrap_items(data), status
 
 
@@ -96,7 +138,7 @@ def tracker_activities(
     parts = [f"onchainos tracker activities --tracker-type {tracker_type}", f"--trade-type {trade_type}", f"--limit {limit}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=25, source="okx-onchainos-tracker-activities")
+    data, status = _json_command(" ".join(parts), timeout=25, source="okx-onchainos-tracker-activities")
     return _unwrap_items(data), status
 
 
@@ -107,7 +149,7 @@ def token_price_info(address: str, chain: str | None = None) -> tuple[dict[str, 
     parts = [f'onchainos token price-info --address "{_quote(address)}"']
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=20, source="okx-onchainos-token-price-info")
+    data, status = _json_command(" ".join(parts), timeout=20, source="okx-onchainos-token-price-info")
     return _unwrap_object(data), status
 
 
@@ -120,7 +162,7 @@ def token_holders(address: str, chain: str | None = None, tag_filter: int | None
         parts.append(f'--chain "{_quote(chain)}"')
     if tag_filter is not None:
         parts.append(f"--tag-filter {tag_filter}")
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=25, source="okx-onchainos-token-holders")
+    data, status = _json_command(" ".join(parts), timeout=25, source="okx-onchainos-token-holders")
     return _unwrap_items(data), status
 
 
@@ -131,7 +173,7 @@ def token_advanced_info(address: str, chain: str | None = None) -> tuple[dict[st
     parts = [f'onchainos token advanced-info --address "{_quote(address)}"']
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=20, source="okx-onchainos-token-advanced-info")
+    data, status = _json_command(" ".join(parts), timeout=20, source="okx-onchainos-token-advanced-info")
     return _unwrap_object(data), status
 
 
@@ -142,7 +184,7 @@ def token_cluster_overview(address: str, chain: str | None = None) -> tuple[dict
     parts = [f'onchainos token cluster-overview --address "{_quote(address)}"']
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=20, source="okx-onchainos-token-cluster-overview")
+    data, status = _json_command(" ".join(parts), timeout=20, source="okx-onchainos-token-cluster-overview")
     return _unwrap_object(data), status
 
 
@@ -153,7 +195,7 @@ def token_cluster_top_holders(address: str, chain: str | None = None, range_filt
     parts = [f'onchainos token cluster-top-holders --address "{_quote(address)}"', f"--range-filter {range_filter}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=20, source="okx-onchainos-token-cluster-top-holders")
+    data, status = _json_command(" ".join(parts), timeout=20, source="okx-onchainos-token-cluster-top-holders")
     return _unwrap_object(data), status
 
 
@@ -164,7 +206,7 @@ def token_trades(address: str, chain: str | None = None, limit: int = 100) -> tu
     parts = [f'onchainos token trades --address "{_quote(address)}"', f"--limit {limit}"]
     if chain:
         parts.append(f'--chain "{_quote(chain)}"')
-    data, status = json_out_safe(_cmd(" ".join(parts)), timeout=25, source="okx-onchainos-token-trades")
+    data, status = _json_command(" ".join(parts), timeout=25, source="okx-onchainos-token-trades")
     return _unwrap_items(data), status
 
 
