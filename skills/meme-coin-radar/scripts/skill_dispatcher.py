@@ -33,6 +33,7 @@ try:
         signal_list as onchainos_signal_list_provider,
         token_snapshot as onchainos_token_snapshot_provider,
         tracker_activities as onchainos_tracker_activities_provider,
+        wallet_status as onchainos_wallet_status_provider,
     )
     from .providers.okx import (
         account_equity as okx_account_equity_impl,
@@ -60,6 +61,7 @@ except ImportError:
         signal_list as onchainos_signal_list_provider,
         token_snapshot as onchainos_token_snapshot_provider,
         tracker_activities as onchainos_tracker_activities_provider,
+        wallet_status as onchainos_wallet_status_provider,
     )
     from providers.okx import (
         account_equity as okx_account_equity_impl,
@@ -161,6 +163,14 @@ def okx_signal_list(
     return items
 
 
+def okx_wallet_status() -> dict[str, Any]:
+    data, status = onchainos_wallet_status_provider()
+    return {
+        "data": data,
+        "status": _status_payload(status),
+    }
+
+
 def okx_tracker_activities(
     tracker_type: str = "smart_money",
     chain: str | None = None,
@@ -179,8 +189,9 @@ def okx_tracker_activities(
     return items
 
 
-def okx_token_snapshot(address: str, chain: str | None = None) -> dict[str, Any]:
-    return onchainos_token_snapshot_provider(address=address, chain=chain)
+def okx_token_snapshot(address: str, chain: str | None = None, depth: str = "full") -> dict[str, Any]:
+    """Fetch on-chain snapshot. depth = "lite" | "deep" | "full"."""
+    return onchainos_token_snapshot_provider(address=address, chain=chain, depth=depth)
 
 
 def _fetch_one_coin(symbol: str) -> tuple:

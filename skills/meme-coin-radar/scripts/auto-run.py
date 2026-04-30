@@ -41,6 +41,7 @@ from skill_dispatcher import (
     okx_swap_tickers,
     okx_token_snapshot,
     okx_tracker_activities,
+    okx_wallet_status,
 )
 from versioning import load_project_version
 
@@ -167,6 +168,24 @@ def _okx_attention_context(snapshot: dict) -> dict:
 
 print(f"=== 妖币雷达 v{PROJECT_VERSION} 扫描（OnchainOS + Alpha + Paper Trade）===")
 print(f"时间: {TS}")
+
+# Step -1: OnchainOS auth preflight
+print("[-1] OnchainOS 登录态检查...")
+okx_wallet = okx_wallet_status()
+okx_wallet_ok = (okx_wallet.get("status") or {}).get("ok", False)
+if not okx_wallet_ok:
+    _preflight_err = (okx_wallet.get("status") or {}).get("error_type", "unknown")
+    _preflight_msg = (okx_wallet.get("status") or {}).get("message", "")
+    print(f"  ⚠️ OnchainOS 登录态检查失败 ({_preflight_err}): {_preflight_msg}")
+    okx_logged_in = False
+    okx_account_count = 0
+else:
+    okx_logged_in = (okx_wallet.get("data") or {}).get("loggedIn", False)
+    okx_account_count = (okx_wallet.get("data") or {}).get("accountCount", 0)
+    if not okx_logged_in:
+        print("  ⚠️ OnchainOS 未登录，部分数据可能不可用")
+    else:
+        print(f"  ✅ OnchainOS 已登录 ({okx_account_count} 个账户)")
 
 # Step 0: BTC 大盘
 print("[0] BTC 大盘... (okx-cex-market: okx market ticker)")
@@ -301,13 +320,15 @@ print(f"  发现候选: CEX可交易={len(tradable_candidates)}, 链上观察={l
 # Step 2a: Onchain snapshots for candidates with OKX addresses
 print("[2a] OKX OnchainOS token snapshots...")
 onchain_snapshots: dict[str, dict] = {}
-for cand in tradable_candidates + onchain_candidates[:10]:
+# Lite snapshots for all candidates with addresses (price-info + advanced-info only)
+lite_candidates = tradable_candidates + onchain_candidates[:10]
+for cand in lite_candidates:
     meta = cand.get("metadata", {})
     address = meta.get("address") or cand.get("token_address")
     chain = meta.get("chain") or cand.get("chain")
     if not address:
         continue
-    snapshot = okx_token_snapshot(address=address, chain=chain)
+    snapshot = okx_token_snapshot(address=address, chain=chain, depth="lite")
     snapshot["signals"] = [
         item for item in okx_signals
         if str((item.get("token") or {}).get("tokenAddress") or item.get("tokenAddress") or "") == str(address)
@@ -334,6 +355,26 @@ for cand in tradable_candidates + onchain_candidates[:10]:
         snapshot["x_hot_token"] = x_hot_source
     onchain_snapshots[cand.get("symbol", address)] = snapshot
     meta["onchain_data"] = {**(meta.get("onchain_data") or {}), **snapshot}
+
+# Deep snapshots for all tradable candidates (risk gates require cluster/holders/trades)
+# onchain-only candidates stay lite to reduce CLI churn
+deep_candidates = tradable_candidates
+for cand in deep_candidates:
+    meta = cand.get("metadata", {})
+    address = meta.get("address") or cand.get("token_address")
+    chain = meta.get("chain") or cand.get("chain")
+    if not address:
+        continue
+    sym = cand.get("symbol", address)
+    deep = okx_token_snapshot(address=address, chain=chain, depth="deep")
+    existing = onchain_snapshots.get(sym) or {}
+    # Merge deep data into existing snapshot
+    for key in ("cluster_overview", "cluster_top_holders", "holders", "trades"):
+        existing[key] = deep.get(key)
+        existing["status"] = existing.get("status") or {}
+        existing["status"][key] = (deep.get("status") or {}).get(key)
+    onchain_snapshots[sym] = existing
+    meta["onchain_data"] = {**(meta.get("onchain_data") or {}), **existing}
 
 save("11_onchain_snapshots.json", json.dumps(onchain_snapshots, indent=2, default=str, ensure_ascii=False))
 
@@ -884,6 +925,11 @@ report_lines += [
     "- `watch_only` 常见于链上强、但当前映射或执行条件不足的标的。",
     "- `manual_review` 代表数据缺口较多或信号边界不清晰，需要人工复核。",
     "",
+] + (  # preflight warning branch
+    [f"*⚠️ OnchainOS 登录态检查失败 ({_preflight_err}): {_preflight_msg}。*", ""]
+    if not okx_wallet_ok
+    else (["*⚠️ OnchainOS 未登录，部分链上数据可能不可用。*", ""] if not okx_logged_in else [])
+) + [
     "*⚠️ 本报告仅供研究与模拟验证，不构成投资建议。*",
     f"*数据路径：{SCAN_DIR}/*",
     f"*Version {PROJECT_VERSION} — {datetime.now().strftime('%Y-%m-%d')}*",
@@ -936,6 +982,11 @@ save(
             "radar_version": PROJECT_VERSION,
             "scan_timestamp": TS,
             "scan_dir": str(SCAN_DIR),
+            "onchainos_auth_preflight": {
+                "loggedIn": okx_logged_in,
+                "accountCount": okx_account_count,
+                **okx_wallet.get("status", {}),
+            },
         },
         indent=2,
         ensure_ascii=False,

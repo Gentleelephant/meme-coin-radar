@@ -67,3 +67,15 @@ Minimum expectation:
 
 - add regression coverage for bug fixes
 - run the most relevant tests before closing the task
+
+### Review Documentation
+
+If the task is a code review, save the review result to:
+
+- `skills/meme-coin-radar/references/review-report.md`
+
+Expected behavior:
+
+- every review must overwrite the file with the current review's content
+- do not append findings to an existing review document
+- the review document should reflect only the latest review requested in the current task

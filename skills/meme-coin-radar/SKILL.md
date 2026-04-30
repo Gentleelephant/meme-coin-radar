@@ -1,20 +1,20 @@
 ---
 name: meme-coin-radar
-description: "妖币雷达 v3.1.1 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
+description: "妖币雷达 v3.2.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
 tags: ["crypto", "meme-coin", "okx", "onchainos", "binance", "alpha", "paper-trade", "smart-money", "sol", "bnb"]
 category: crypto-trading
 license: MIT
 author: hermes
-version: "3.1.1"
+version: "3.2.0"
 metadata:
-  phase: "3.1"
+  phase: "3.2"
   data_sources: ["okx-onchainos", "binance-cli", "binance-alpha"]
   scoring_model: "OOS + ERS + final decision"
   output: "analysis report + raw data to $XDG_STATE_HOME/meme-coin-radar/ or ~/.local/state/meme-coin-radar/ (fallback: system temp dir)"
   auto_script: "skills/meme-coin-radar/scripts/auto-run.py"
 ---
 
-# 妖币雷达 v3.1.1
+# 妖币雷达 v3.2.0
 
 > 单一版本源：`skills/meme-coin-radar/VERSION`
 
@@ -34,10 +34,11 @@ metadata:
 
 | Step | 数据内容 | 获取方式 | 底层来源 |
 |---:|---|---|---|
+| -1 | OnchainOS 登录态预检 | `skill_dispatcher.okx_wallet_status()` | OKX OnchainOS CLI |
 | 0 | BTC 大盘状态 | `skill_dispatcher.okx_btc_status()` | OKX CEX |
 | 0.5 | Binance Alpha 热度 | `skill_dispatcher.binance_alpha()` | Binance Alpha |
 | 1 | 链上候选发现 | `skill_dispatcher.okx_hot_tokens()` / `okx_signal_list()` / `okx_tracker_activities()` | OKX OnchainOS |
-| 2 | 链上快照补全 | `skill_dispatcher.okx_token_snapshot()` | OKX OnchainOS |
+| 2a | 链上快照（lite+deep 分层）| 所有 candidate 先 `depth="lite"`；所有 tradable candidate 再补 `depth="deep"`（onchain-only 保持 lite） | OKX OnchainOS |
 | 3 | 执行承接数据 | `skill_dispatcher.batch_binance()` | Binance Futures |
 | 4 | 评分与交易计划 | `radar_logic.score_candidate()` / `build_trade_plan()` | 本地 Python |
 
