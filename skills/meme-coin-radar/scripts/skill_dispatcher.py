@@ -26,7 +26,7 @@ try:
         futures_ticker,
         open_interest as binance_open_interest,
     )
-    from .providers.common import FetchStatus, json_out, json_out_safe
+    from .providers.common import FetchStatus
     from .providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
     from .providers.onchainos import (
         hot_tokens as onchainos_hot_tokens_provider,
@@ -34,7 +34,12 @@ try:
         token_snapshot as onchainos_token_snapshot_provider,
         tracker_activities as onchainos_tracker_activities_provider,
     )
-    from .providers.okx import account_equity as okx_account_equity_impl
+    from .providers.okx import (
+        account_equity as okx_account_equity_impl,
+        btc_status as okx_btc_status_impl,
+        funding_rate as okx_funding_rate_impl,
+        swap_tickers as okx_swap_tickers_impl,
+    )
 except ImportError:
     from providers.binance import (
         alpha_token_list,
@@ -48,7 +53,7 @@ except ImportError:
         futures_ticker,
         open_interest as binance_open_interest,
     )
-    from providers.common import FetchStatus, json_out, json_out_safe
+    from providers.common import FetchStatus
     from providers.hyperliquid import btc_status as hyperliquid_btc_status, swap_tickers as hyperliquid_swap_tickers
     from providers.onchainos import (
         hot_tokens as onchainos_hot_tokens_provider,
@@ -56,110 +61,29 @@ except ImportError:
         token_snapshot as onchainos_token_snapshot_provider,
         tracker_activities as onchainos_tracker_activities_provider,
     )
-    from providers.okx import account_equity as okx_account_equity_impl
+    from providers.okx import (
+        account_equity as okx_account_equity_impl,
+        btc_status as okx_btc_status_impl,
+        funding_rate as okx_funding_rate_impl,
+        swap_tickers as okx_swap_tickers_impl,
+    )
 
 BATCH_WORKERS = 12
 BATCH_TIMEOUT_SECONDS = 60
 
 
 def okx_btc_status() -> dict:
-    data = json_out("okx market ticker BTC-USDT-SWAP --json", timeout=15)
-    if not data:
-        return hyperliquid_btc_status()
-
-    items = data if isinstance(data, list) else []
-    if not items:
-        return hyperliquid_btc_status()
-
-    item = items[0] if isinstance(items[0], dict) else {}
-    if item:
-        try:
-            last = float(str(item.get("last", "0")).replace(",", ""))
-            open24h = float(str(item.get("open24h", "0")).replace(",", ""))
-            chg = (last - open24h) / open24h * 100 if open24h > 0 else 0.0
-            return {
-                "price": last,
-                "open24h": open24h,
-                "chg24h_pct": chg,
-                "direction": "up" if chg > 2 else ("down" if chg < -2 else "neutral"),
-                "raw": item,
-                "source": "okx",
-            }
-        except (ValueError, TypeError):
-            return hyperliquid_btc_status()
-
-    values = items[0] if isinstance(items[0], (list, tuple)) else []
-    if len(values) >= 9:
-        try:
-            last = float(values[1])
-            open24h = float(values[7])
-            chg = (last - open24h) / open24h * 100 if open24h > 0 else 0.0
-            return {
-                "price": last,
-                "open24h": open24h,
-                "chg24h_pct": chg,
-                "direction": "up" if chg > 2 else ("down" if chg < -2 else "neutral"),
-                "raw": {"instId": values[0], "last": values[1], "open24h": values[7]},
-                "source": "okx",
-            }
-        except (ValueError, TypeError, IndexError):
-            return hyperliquid_btc_status()
-    return hyperliquid_btc_status()
+    data = okx_btc_status_impl()
+    return data if data else hyperliquid_btc_status()
 
 
 def okx_swap_tickers() -> list:
-    data = json_out("okx market tickers SWAP --json", timeout=20)
-    if not data:
-        return hyperliquid_swap_tickers()
-
-    items = data if isinstance(data, list) else data.get("data", [])
-    result = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        inst_id = str(item.get("instId", ""))
-        if "-USDT-SWAP" not in inst_id:
-            continue
-        try:
-            last = float(str(item.get("last", 0) or 0).replace(",", ""))
-            high = float(str(item.get("high24h", 0) or 0).replace(",", ""))
-            low = float(str(item.get("low24h", 0) or 0).replace(",", ""))
-            vol = float(str(item.get("volCcy24h", 0) or 0).replace(",", ""))
-            open24h = float(str(item.get("open24h", 0) or 0).replace(",", ""))
-            chg = (last - open24h) / open24h * 100 if open24h > 0 else 0.0
-            result.append({
-                "instId": inst_id,
-                "symbol": inst_id.replace("-USDT-SWAP", ""),
-                "last": last,
-                "high24h": high,
-                "low24h": low,
-                "vol24h": vol,
-                "open24h": open24h,
-                "chg24h_pct": chg,
-                "source": "okx",
-            })
-        except (ValueError, TypeError):
-            continue
-    return result if result else hyperliquid_swap_tickers()
+    data = okx_swap_tickers_impl()
+    return data if data else hyperliquid_swap_tickers()
 
 
 def okx_funding_rate(inst_id: str) -> Optional[dict]:
-    data = json_out(f"okx market funding-rate {inst_id} --json", timeout=10)
-    if not data:
-        return None
-    items = data if isinstance(data, list) else data.get("data", [])
-    if not items or not isinstance(items[0], dict):
-        return None
-    item = items[0]
-    try:
-        return {
-            "fundingRate_pct": float(str(item.get("fundingRate", "0"))) * 100,
-            "nextFundingTime": item.get("nextFundingTime", ""),
-            "raw": item,
-            "source": "okx",
-        }
-    except (ValueError, TypeError):
-        return None
+    return okx_funding_rate_impl(inst_id)
 
 
 def okx_account_equity() -> float:

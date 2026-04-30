@@ -10,10 +10,91 @@ from scripts.history_store import cleanup_old_snapshots
 from scripts.providers import binance as binance_provider
 from scripts.providers.common import FetchStatus
 from scripts.providers.intel import fetch_social_intel
+from scripts.providers import okx as okx_provider
 from scripts.radar_logic import score_candidate
 
 
 class ProviderRegressionTest(unittest.TestCase):
+    @patch("scripts.providers.okx._okx_public_json")
+    def test_okx_btc_status_uses_http_api(self, mock_okx_public_json) -> None:
+        mock_okx_public_json.return_value = (
+            {
+                "code": "0",
+                "data": [
+                    {
+                        "instId": "BTC-USDT-SWAP",
+                        "last": "100000",
+                        "open24h": "98000",
+                    }
+                ],
+            },
+            FetchStatus(ok=True, source="okx-market-ticker"),
+        )
+
+        data = okx_provider.btc_status()
+
+        self.assertEqual(data["source"], "okx")
+        self.assertEqual(data["price"], 100000.0)
+        self.assertEqual(data["direction"], "up")
+        self.assertEqual(mock_okx_public_json.call_args.kwargs["source"], "okx-market-ticker")
+
+    @patch("scripts.providers.okx._okx_public_json")
+    def test_okx_swap_tickers_uses_http_api(self, mock_okx_public_json) -> None:
+        mock_okx_public_json.return_value = (
+            {
+                "code": "0",
+                "data": [
+                    {
+                        "instId": "DOGE-USDT-SWAP",
+                        "last": "0.25",
+                        "high24h": "0.30",
+                        "low24h": "0.20",
+                        "volCcy24h": "123456",
+                        "open24h": "0.20",
+                    },
+                    {
+                        "instId": "BTC-USD-SWAP",
+                        "last": "1",
+                        "high24h": "1",
+                        "low24h": "1",
+                        "volCcy24h": "1",
+                        "open24h": "1",
+                    },
+                ],
+            },
+            FetchStatus(ok=True, source="okx-market-tickers"),
+        )
+
+        items = okx_provider.swap_tickers()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["symbol"], "DOGE")
+        self.assertAlmostEqual(items[0]["chg24h_pct"], 25.0, places=6)
+        self.assertEqual(mock_okx_public_json.call_args.kwargs["params"], {"instType": "SWAP"})
+
+    @patch("scripts.providers.okx._okx_private_json")
+    def test_okx_account_equity_falls_back_to_positions(self, mock_okx_private_json) -> None:
+        mock_okx_private_json.side_effect = [
+            (
+                None,
+                FetchStatus(ok=False, error_type=FetchStatus.AUTH_ERROR, source="okx-account-balance"),
+            ),
+            (
+                {
+                    "code": "0",
+                    "data": [
+                        {"margin": "12.5"},
+                        {"margin": "7.5"},
+                    ],
+                },
+                FetchStatus(ok=True, source="okx-account-positions"),
+            ),
+        ]
+
+        total = okx_provider.account_equity()
+
+        self.assertEqual(total, 20.0)
+
     def test_score_candidate_uses_ticker_low_for_intraday_position(self) -> None:
         result = score_candidate(
             symbol="TEST",
