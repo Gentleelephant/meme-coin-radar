@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,42 @@ except ImportError:
     from history_store import history_dir, load_recent_social_snapshot
 
 
-PANews_CLI = Path("/Users/zhangpeng/.cc-switch/skills/panews/scripts/cli.mjs")
-SURF_BIN = "surf"
+def _resolve_panews_cli() -> Path | None:
+    """Resolve PANews CLI path through env → common skill dirs → which."""
+    # 1. Env override
+    env_path = os.getenv("RADAR_PANEWS_CLI")
+    if env_path:
+        p = Path(env_path)
+        if p.exists():
+            return p
+    # 2. Common skill directory layouts
+    candidates = [
+        Path.home() / ".cc-switch/skills/panews/scripts/cli.mjs",
+        Path.home() / ".claude/skills/panews/scripts/cli.mjs",
+        Path.home() / ".agents/skills/panews/scripts/cli.mjs",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    # 3. shutil.which fallback (if panews is on PATH as a wrapper)
+    found = shutil.which("panews")
+    if found:
+        return Path(found)
+    return None
+
+
+def _resolve_surf_bin() -> str | None:
+    """Resolve surf binary path."""
+    env_path = os.getenv("RADAR_SURF_BIN")
+    if env_path and shutil.which(env_path):
+        return env_path
+    if shutil.which("surf"):
+        return "surf"
+    return None
+
+
+PANews_CLI = _resolve_panews_cli()
+SURF_BIN = _resolve_surf_bin()
 CACHE_TTL_SECONDS = 1800
 
 NARRATIVE_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -40,9 +75,22 @@ def _run_command(command: list[str], source: str, timeout: int = 20) -> tuple[st
         latency = (time.time() - t0) * 1000
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "").strip()
-            error_type = FetchStatus.COMMAND_NOT_FOUND if "command not found" in message.lower() else FetchStatus.SOURCE_UNAVAILABLE
-            if "ENOTFOUND" in message or "getaddrinfo" in message.lower():
+            lowered = message.lower()
+            error_type = FetchStatus.COMMAND_NOT_FOUND if "command not found" in lowered else FetchStatus.SOURCE_UNAVAILABLE
+            if "ENOTFOUND" in message or "getaddrinfo" in lowered:
                 error_type = FetchStatus.NETWORK
+            elif (
+                "free_quota_exhausted" in lowered
+                or "paid_balance_zero" in lowered
+                or "insufficient_credit" in lowered
+                or "quota exceeded" in lowered
+                or "credits exhausted" in lowered
+            ):
+                error_type = FetchStatus.RATE_LIMIT
+            elif "rate_limited" in lowered or "too many requests" in lowered or "throttl" in lowered or "rate limit" in lowered:
+                error_type = FetchStatus.RATE_LIMIT
+            elif "unauthorized" in lowered or "invalid api key" in lowered:
+                error_type = FetchStatus.AUTH_ERROR
             return None, FetchStatus(ok=False, error_type=error_type, message=message, latency_ms=latency, source=source)
         return completed.stdout.strip(), FetchStatus(ok=True, latency_ms=latency, source=source)
     except FileNotFoundError as exc:
@@ -117,6 +165,9 @@ def _provider_result(data: dict[str, Any], status: FetchStatus, confidence: floa
 
 
 def fetch_panews_rankings(output_dir: Path, lang: str = "en", take: int = 10) -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-rankings")
+        return _provider_result({"items": []}, status, confidence=0.0)
     cached = _load_cache(output_dir, f"panews_rankings_{lang}")
     if cached:
         return cached
@@ -132,21 +183,14 @@ def fetch_panews_rankings(output_dir: Path, lang: str = "en", take: int = 10) ->
 
 
 def fetch_panews_hooks(output_dir: Path, lang: str = "en", take: int = 20) -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-hooks")
+        return _provider_result({"items": []}, status, confidence=0.0)
     cached = _load_cache(output_dir, f"panews_hooks_{lang}")
     if cached:
         return cached
     raw, status = _run_command(
-        [
-            "node",
-            str(PANews_CLI),
-            "get-hooks",
-            "--category",
-            "search-keywords,website-recommended-topic,homepage-tab",
-            "--take",
-            str(take),
-            "--lang",
-            lang,
-        ],
+        ["node", str(PANews_CLI), "get-hooks", "--category", "search-keywords,website-recommended-topic,homepage-tab", "--take", str(take), "--lang", lang],
         source="panews-hooks",
         timeout=25,
     )
@@ -157,6 +201,9 @@ def fetch_panews_hooks(output_dir: Path, lang: str = "en", take: int = 20) -> di
 
 
 def fetch_panews_news(symbol: str, lang: str = "en", take: int = 5) -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-search-articles")
+        return _provider_result({"article_count": 0, "headlines": []}, status, confidence=0.0)
     raw, status = _run_command(
         ["node", str(PANews_CLI), "search-articles", symbol, "--take", str(take), "--lang", lang],
         source="panews-search-articles",
@@ -173,6 +220,9 @@ def fetch_panews_news(symbol: str, lang: str = "en", take: int = 5) -> dict[str,
 
 
 def fetch_panews_events(symbol: str, lang: str = "en", take: int = 10) -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-events")
+        return _provider_result({"event_count": 0, "event_titles": []}, status, confidence=0.0)
     raw, status = _run_command(
         ["node", str(PANews_CLI), "list-events", "--search", symbol, "--take", str(take), "--lang", lang],
         source="panews-events",
@@ -189,6 +239,9 @@ def fetch_panews_events(symbol: str, lang: str = "en", take: int = 10) -> dict[s
 
 
 def fetch_panews_calendar(symbol: str, lang: str = "en", take: int = 10) -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-calendar")
+        return _provider_result({"calendar_count": 0, "calendar_flags": []}, status, confidence=0.0)
     raw, status = _run_command(
         ["node", str(PANews_CLI), "list-calendar-events", "--search", symbol, "--take", str(take), "--lang", lang],
         source="panews-calendar",
@@ -205,6 +258,9 @@ def fetch_panews_calendar(symbol: str, lang: str = "en", take: int = 10) -> dict
 
 
 def fetch_panews_polymarket_snapshot(lang: str = "en") -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-polymarket-highlights")
+        return _provider_result({"highlight_count": 0, "labels": [], "score": None}, status, confidence=0.0)
     raw, status = _run_command(
         ["node", str(PANews_CLI), "get-polymarket-highlights"],
         source="panews-polymarket-highlights",
@@ -218,10 +274,18 @@ def fetch_panews_polymarket_snapshot(lang: str = "en") -> dict[str, Any]:
         status,
         confidence=0.6 if texts else 0.2,
     )
+    items = _parse_json_or_lines(raw)
+    texts = [str(item.get("title") or item.get("text") or item.get("boardName") or "").strip() for item in items]
+    texts = [text for text in texts if text]
+    return _provider_result(
+        {"highlight_count": len(texts), "labels": texts[:10], "score": float(min(len(texts), 5)) if texts else None},
+        status,
+        confidence=0.6 if texts else 0.2,
+    )
 
 
 def fetch_surf_news(symbol: str, take: int = 5) -> dict[str, Any]:
-    if shutil.which(SURF_BIN) is None:
+    if SURF_BIN is None:
         status = FetchStatus(ok=False, error_type=FetchStatus.OPTIONAL_UNAVAILABLE, message="surf CLI not installed", source="surf-news")
         return _provider_result({"article_count": 0, "headlines": [], "event_tags": []}, status, confidence=0.0)
     raw, status = _run_command(
@@ -239,15 +303,50 @@ def fetch_surf_news(symbol: str, take: int = 5) -> dict[str, Any]:
     )
 
 
+def _resolve_surf_social_cmd() -> str:
+    """Resolve surf social command with env override."""
+    env_cmd = os.getenv("RADAR_SURF_SOCIAL_CMD")
+    if env_cmd:
+        return env_cmd
+    return "search-social"
+
+
+SURF_SOCIAL_CMD = _resolve_surf_social_cmd()
+
+
+def _try_surf_social_commands(symbol: str) -> tuple[str | None, FetchStatus]:
+    """Try surf social command with fallback to alternative commands."""
+    commands_to_try = [SURF_SOCIAL_CMD]
+    if SURF_SOCIAL_CMD != "search-social-posts":
+        commands_to_try.append("search-social-posts")
+    if SURF_SOCIAL_CMD != "search-social":
+        commands_to_try.append("search-social")
+
+    for cmd in commands_to_try:
+        raw, status = _run_command(
+            [SURF_BIN, cmd, "--q", symbol, "--limit", "10", "--json"],
+            source="surf-social",
+            timeout=25,
+        )
+        if status.ok:
+            return raw, status
+        msg = (status.message or "").lower()
+        if "unknown command" in msg or "not found" in msg or "unknown flag" in msg:
+            continue
+        return raw, status
+    return None, FetchStatus(
+        ok=False,
+        error_type=FetchStatus.COMMAND_NOT_FOUND,
+        message="surf social command not available (tried: " + ", ".join(commands_to_try) + ")",
+        source="surf-social",
+    )
+
+
 def fetch_surf_social(symbol: str) -> dict[str, Any]:
-    if shutil.which(SURF_BIN) is None:
+    if SURF_BIN is None:
         status = FetchStatus(ok=False, error_type=FetchStatus.OPTIONAL_UNAVAILABLE, message="surf CLI not installed", source="surf-social")
         return _provider_result({"mentions_24h": 0, "mindshare_score": None, "sentiment_score": None, "kol_mentions": 0}, status, confidence=0.0)
-    raw, status = _run_command(
-        [SURF_BIN, "search-social", "--q", symbol, "--limit", "10", "--json"],
-        source="surf-social",
-        timeout=25,
-    )
+    raw, status = _try_surf_social_commands(symbol)
     items = _parse_json_or_lines(raw)
     mentions = len(items)
     return _provider_result(
@@ -343,6 +442,7 @@ def fetch_social_intel(
         "panews_polymarket": panews_board,
         "panews_rankings": panews_context.get("panews_rankings", {}),
         "panews_hooks": panews_context.get("panews_hooks", {}),
+        "macro_calendar": panews_context.get("macro_calendar", {}),
     }
     degraded = _source_degraded(source_results)
     available_sources = sum(1 for result in source_results.values() if result.get("ok"))
@@ -355,6 +455,14 @@ def fetch_social_intel(
 
     keyword_set = {str(keyword).strip().lower() for keyword in shared_keywords if str(keyword).strip()}
 
+    # Extract macro-relevant events from shared macro calendar
+    macro_calendar_data = (panews_context.get("macro_calendar") or {}).get("data") or {}
+    macro_items = macro_calendar_data.get("macro_items") or []
+    sym_lower = symbol.lower()
+    symbol_macro_items = [it for it in macro_items if sym_lower in it.get("title", "").lower()]
+    high_importance_macro = any(
+        it.get("category", "").lower() in {"exchange", "token unlock", "regulation"} for it in symbol_macro_items
+    )
     merged = {
         "symbol": symbol,
         "chain": chain,
@@ -383,6 +491,10 @@ def fetch_social_intel(
         "public_board_snapshot_score": (panews_board.get("data") or {}).get("score"),
         "public_board_snapshot_labels": (panews_board.get("data") or {}).get("labels") or [],
         "narrative_labels": [],
+        # macro catalyst fields
+        "macro_event_count_24h": len(symbol_macro_items),
+        "macro_events": symbol_macro_items,
+        "high_importance_macro_event": high_importance_macro,
         "source_confidence": {key: float(result.get("confidence", 0.0) or 0.0) for key, result in source_results.items()},
         "status": {key: {"ok": result.get("ok"), "error_type": result.get("error_type"), "source": result.get("source"), "fetched_at": result.get("fetched_at")} for key, result in source_results.items()},
         "source_degraded": degraded,
@@ -392,9 +504,87 @@ def fetch_social_intel(
     return merged
 
 
+MACRO_KEYWORDS: tuple[str, ...] = ("unlock", "fomc", "fed", "cpi", "nfp", "etf", "sec", "vote", "election", "regulat", "delist", "list", "burn", "halving")
+
+
+def _is_macro_relevant(title: str) -> bool:
+    return any(kw in title.lower() for kw in MACRO_KEYWORDS)
+
+
+def _parse_calendar_items(raw: str | None) -> list[dict[str, Any]]:
+    """Parse PANews calendar markdown text into structured items.
+
+    Expected format (each entry spans multiple lines):
+      N.   **id**: <uuid>
+        **title**: <title text>
+        **date**: <iso-date>
+        **category**: <category>
+    """
+    if not raw:
+        return []
+    entries: list[list[str]] = [[]]
+    for line in raw.splitlines():
+        line = line.rstrip("\n")
+        # New entry starts with "N.  " prefix or is top-level
+        stripped = line.strip()
+        if stripped and (stripped[0].isdigit() and stripped[1:].startswith(".   **id**") or stripped.startswith("**id**")):
+            if entries[-1]:
+                entries.append([])
+        entries[-1].append(stripped)
+    if not entries[-1]:
+        entries.pop()
+
+    results: list[dict[str, Any]] = []
+    for entry_lines in entries:
+        title = ""
+        date_str = ""
+        category = ""
+        for line in entry_lines:
+            prefix = "**title**: "
+            if line.startswith(prefix):
+                title = line[len(prefix):].strip()
+                continue
+            prefix = "**date**: "
+            if line.startswith(prefix):
+                date_str = line[len(prefix):].strip()
+                continue
+            prefix = "**category**: "
+            if line.startswith(prefix):
+                category = line[len(prefix):].strip()
+                continue
+        if title:
+            results.append({"title": title, "date": date_str, "category": category, "macro_relevant": _is_macro_relevant(title)})
+    return results
+
+
+def fetch_macro_calendar(output_dir: Path, lang: str = "en", take: int = 30) -> dict[str, Any]:
+    if PANews_CLI is None:
+        status = FetchStatus(ok=False, error_type=FetchStatus.COMMAND_NOT_FOUND, message="PANews CLI not found (RADAR_PANEWS_CLI)", source="panews-calendar-macro")
+        return _provider_result({"items": [], "macro_items": [], "macro_count": 0}, status, confidence=0.0)
+    cached = _load_cache(output_dir, "macro_calendar")
+    if cached:
+        return cached
+    start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    raw, status = _run_command(
+        ["node", str(PANews_CLI), "list-calendar-events", "--start-from", start_date, "--order", "asc", "--take", str(take), "--lang", lang],
+        source="panews-calendar-macro",
+        timeout=25,
+    )
+    items = _parse_calendar_items(raw)
+    macro_items = [it for it in items if it["macro_relevant"]]
+    payload = _provider_result(
+        {"items": items, "macro_items": macro_items, "macro_count": len(macro_items)},
+        status,
+        confidence=0.7 if items else 0.25,
+    )
+    _save_cache(output_dir, "macro_calendar", payload)
+    return payload
+
+
 def build_shared_intel_context(output_dir: Path, lang: str = "en") -> dict[str, Any]:
     return {
         "panews_rankings": fetch_panews_rankings(output_dir, lang=lang),
         "panews_hooks": fetch_panews_hooks(output_dir, lang=lang),
         "panews_polymarket": fetch_panews_polymarket_snapshot(lang=lang),
+        "macro_calendar": fetch_macro_calendar(output_dir, lang=lang),
     }

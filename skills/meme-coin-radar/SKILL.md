@@ -1,11 +1,11 @@
 ---
 name: meme-coin-radar
-description: "妖币雷达 v3.2.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
+description: "妖币雷达 v3.3.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
 tags: ["crypto", "meme-coin", "okx", "onchainos", "binance", "alpha", "paper-trade", "smart-money", "sol", "bnb"]
 category: crypto-trading
 license: MIT
 author: hermes
-version: "3.2.0"
+version: "3.3.0"
 metadata:
   phase: "3.2"
   data_sources: ["okx-onchainos", "binance-cli", "binance-alpha"]

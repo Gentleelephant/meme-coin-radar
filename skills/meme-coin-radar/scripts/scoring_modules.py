@@ -261,6 +261,23 @@ def score_social_momentum(
     return min(score, 8)
 
 
+def score_macro_catalyst(
+    macro_event_count: int,
+    high_importance_macro_event: bool,
+) -> int:
+    """Score macro catalyst impact on opportunity set.
+
+    Positive if there are relevant macro events (catalyst), but capped
+    to avoid over-weighting. High-importance events score slightly higher.
+    """
+    if macro_event_count <= 0:
+        return 0
+    score = min(macro_event_count, 3)
+    if high_importance_macro_event:
+        score += 1
+    return min(score, 4)
+
+
 def score_news_narrative(
     global_news_count_24h: int | None,
     panews_article_count_24h: int | None,

@@ -26,6 +26,7 @@ try:
         score_social_heat_v2,
         score_social_momentum,
         score_news_narrative,
+        score_macro_catalyst,
         score_turnover_activity,
         to_float,
     )
@@ -53,6 +54,7 @@ except ImportError:
         score_social_heat_v2,
         score_social_momentum,
         score_news_narrative,
+        score_macro_catalyst,
         score_turnover_activity,
         to_float,
     )
@@ -697,6 +699,10 @@ def score_candidate(
         to_float(social_intel.get("public_board_snapshot_score"), default=0.0) if social_intel.get("public_board_snapshot_score") is not None else None,
         social_intel.get("narrative_labels") or [],
     )
+    macro_catalyst = score_macro_catalyst(
+        int(to_float(social_intel.get("macro_event_count_24h"), default=0)),
+        bool(social_intel.get("high_importance_macro_event")),
+    )
     social_heat = score_social_heat_v2(
         okx_x_rank,
         int(to_float(social_intel.get("social_mentions_24h"), default=0)),
@@ -717,7 +723,7 @@ def score_candidate(
             to_float(oi.get("oi_change_pct"), default=None) if oi else None,
         )
     base_oos = turnover_activity + momentum_window + holder_structure + smart_money_resonance + market_cap_fit + intraday_position
-    oos = base_oos + social_heat
+    oos = base_oos + social_heat + macro_catalyst
 
     execution_mapping = score_execution_mapping(mapping_confidence, tradable)
     execution_alpha = score_execution_alpha(count24h, alpha_pct)
@@ -813,6 +819,17 @@ def score_candidate(
     if not tradable and decision == "watch_only":
         risk_notes.append("链上强度达标，但当前无法承接 Binance 模拟交易")
 
+    # Macro event risk adjustment
+    macro_events = social_intel.get("macro_events") or []
+    if macro_events:
+        event_titles = [e.get("title", "") for e in macro_events[:3]]
+        risk_notes.append(f"近期存在宏观/事件催化: {', '.join(event_titles)}")
+        if social_intel.get("high_importance_macro_event"):
+            confidence = max(0.0, confidence - 0.15)
+            risk_notes.append("高重要性事件临近，建议降低仓位或观望")
+    if macro_catalyst > 0:
+        hit.append(f"宏观事件催化+{macro_catalyst}")
+
     regime = "risk_on" if btc_dir == "up" else ("risk_off" if btc_dir == "down" else "neutral")
 
     return {
@@ -844,6 +861,7 @@ def score_candidate(
             "social_heat": social_heat,
             "social_momentum": social_momentum,
             "news_narrative": news_narrative,
+            "macro_catalyst": macro_catalyst,
             "execution_mapping": execution_mapping,
             "execution_alpha": execution_alpha,
             "execution_liquidity": execution_liquidity,

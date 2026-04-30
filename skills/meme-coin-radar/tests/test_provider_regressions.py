@@ -1,17 +1,96 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from scripts.config import Settings
 from scripts.history_store import cleanup_old_snapshots
 from scripts.providers import binance as binance_provider
 from scripts.providers.common import FetchStatus
-from scripts.providers.intel import fetch_social_intel
+from scripts.providers.intel import (
+    _resolve_panews_cli,
+    _resolve_surf_bin,
+    _resolve_surf_social_cmd,
+    _run_command,
+    fetch_social_intel,
+)
 from scripts.providers import okx as okx_provider
 from scripts.radar_logic import score_candidate
+
+
+class ProviderResolutionTest(unittest.TestCase):
+    """Regression tests for provider CLI resolution (review-report.md fixes)."""
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("scripts.providers.intel.shutil.which", return_value=None)
+    def test_panews_cli_returns_none_when_no_candidates(self, _mock_which) -> None:
+        with patch("pathlib.Path.exists", return_value=False):
+            result = _resolve_panews_cli()
+        self.assertIsNone(result)
+
+    @patch("pathlib.Path.exists", return_value=True)
+    @patch.dict(os.environ, {"RADAR_PANEWS_CLI": "/custom/panews/cli.mjs"})
+    def test_panews_cli_prefers_env_override(self, _mock_exists) -> None:
+        result = _resolve_panews_cli()
+        self.assertIsNotNone(result)
+        self.assertEqual(str(result), "/custom/panews/cli.mjs")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_surf_bin_prefers_env_override(self) -> None:
+        with patch("scripts.providers.intel.shutil.which", side_effect=lambda x: x if x == "/custom/surf" else None):
+            with patch.dict(os.environ, {"RADAR_SURF_BIN": "/custom/surf"}):
+                result = _resolve_surf_bin()
+        self.assertEqual(result, "/custom/surf")
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch("scripts.providers.intel.shutil.which", return_value="surf")
+    def test_surf_bin_falls_back_to_path(self, _mock_which) -> None:
+        result = _resolve_surf_bin()
+        self.assertEqual(result, "surf")
+
+    @patch.dict(os.environ, {"RADAR_SURF_SOCIAL_CMD": "search-social-posts"})
+    def test_surf_social_cmd_uses_env_override(self) -> None:
+        result = _resolve_surf_social_cmd()
+        self.assertEqual(result, "search-social-posts")
+
+    def test_surf_social_cmd_defaults_to_search_social(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            result = _resolve_surf_social_cmd()
+        self.assertEqual(result, "search-social")
+
+
+class QuotaHandlingTest(unittest.TestCase):
+    """Regression tests for quota/rate-limit error classification."""
+
+    @patch("scripts.providers.intel.subprocess.run")
+    def test_run_command_detects_free_quota_exhausted(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=4, stdout="", stderr="Error: free_quota_exhausted")
+        raw, status = _run_command(["surf", "test"], source="surf-test")
+        self.assertIsNone(raw)
+        self.assertFalse(status.ok)
+        self.assertEqual(status.error_type, FetchStatus.RATE_LIMIT)
+
+    @patch("scripts.providers.intel.subprocess.run")
+    def test_run_command_detects_paid_balance_zero(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=4, stdout="", stderr="Error: PAID_BALANCE_ZERO")
+        raw, status = _run_command(["surf", "test"], source="surf-test")
+        self.assertEqual(status.error_type, FetchStatus.RATE_LIMIT)
+
+    @patch("scripts.providers.intel.subprocess.run")
+    def test_run_command_detects_rate_limited(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=429, stdout="", stderr="rate_limited: too many requests")
+        raw, status = _run_command(["surf", "test"], source="surf-test")
+        self.assertEqual(status.error_type, FetchStatus.RATE_LIMIT)
+
+    @patch("scripts.providers.intel.subprocess.run")
+    def test_run_command_detects_unauthorized(self, mock_run) -> None:
+        mock_run.return_value = MagicMock(returncode=401, stdout="", stderr="unauthorized: invalid api key")
+        raw, status = _run_command(["surf", "test"], source="surf-test")
+        self.assertEqual(status.error_type, FetchStatus.AUTH_ERROR)
 
 
 class ProviderRegressionTest(unittest.TestCase):

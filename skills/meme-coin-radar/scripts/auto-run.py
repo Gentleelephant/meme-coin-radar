@@ -408,6 +408,12 @@ fetch_status["__onchain_discovery__"] = {
         "fetched_at": (shared_intel_context.get("panews_polymarket") or {}).get("fetched_at", 0),
         "error_type": (shared_intel_context.get("panews_polymarket") or {}).get("error_type"),
     },
+    "macro_calendar": {
+        "ok": (shared_intel_context.get("macro_calendar") or {}).get("ok", False),
+        "source": (shared_intel_context.get("macro_calendar") or {}).get("source", "panews-calendar-macro"),
+        "fetched_at": (shared_intel_context.get("macro_calendar") or {}).get("fetched_at", 0),
+        "error_type": (shared_intel_context.get("macro_calendar") or {}).get("error_type"),
+    },
 }
 for symbol, snapshot in onchain_snapshots.items():
     status_map = snapshot.get("status") or {}
@@ -734,6 +740,28 @@ report_lines = [
     f"| 市场判断 | {market_bias} | — | {btc_source} |",
     f"| 账户权益 | ${account_equity:,.2f} | — | okx |" if account_equity > 0 else "| 账户权益 | N/A | — | okx |",
     "",
+    "## 📅 宏观/事件日历",
+    "",
+]
+
+# Macro calendar section
+macro_calendar_data = (shared_intel_context.get("macro_calendar") or {}).get("data") or {}
+macro_items_all = macro_calendar_data.get("macro_items") or []
+if macro_items_all:
+    report_lines += [
+        "| 日期 | 类别 | 事件 |",
+        "|---|---|---|",
+    ]
+    for item in macro_items_all[:10]:
+        date = item.get("date", "—")
+        category = item.get("category", "—")
+        title = item.get("title", "—")
+        report_lines.append(f"| {date} | {category} | {title} |")
+    report_lines.append("")
+else:
+    report_lines += ["> 近期无高重要性宏观/事件数据", ""]
+
+report_lines += [
     "## 🎯 Paper Trade 候选",
     "",
 ]

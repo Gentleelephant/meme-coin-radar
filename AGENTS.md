@@ -79,3 +79,15 @@ Expected behavior:
 - every review must overwrite the file with the current review's content
 - do not append findings to an existing review document
 - the review document should reflect only the latest review requested in the current task
+
+### Optimization Documentation
+
+If the task is to analyze gaps, propose improvements, or organize future development items, save the optimization result to:
+
+- `skills/meme-coin-radar/references/optimization-report.md`
+
+Expected behavior:
+
+- every optimization pass must overwrite the file with the current optimization content
+- do not append optimization items to an existing optimization document
+- the optimization document should reflect only the latest optimization request in the current task
