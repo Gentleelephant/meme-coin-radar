@@ -33,7 +33,12 @@ def _get_bool(name: str, default: bool) -> bool:
 
 def _get_list(name: str, default: str) -> tuple[str, ...]:
     raw = _get_env(name, default)
-    return tuple(part.strip().upper() for part in raw.split(",") if part.strip())
+    items: list[str] = []
+    for part in raw.split(","):
+        value = part.strip().upper()
+        if value and value not in items:
+            items.append(value)
+    return tuple(items)
 
 
 def _default_output_dir() -> Path:
@@ -61,6 +66,8 @@ def ensure_output_dir(preferred: Path) -> Path:
 @dataclass
 class Settings:
     output_dir: Path = field(default_factory=lambda: Path(_get_env("RADAR_OUTPUT_DIR", str(_default_output_dir()))).expanduser())
+    run_mode: str = field(default_factory=lambda: _get_env("RADAR_RUN_MODE", "scan").lower())
+    target_symbols: tuple[str, ...] = field(default_factory=lambda: _get_list("RADAR_TARGET_SYMBOLS", ""))
     top_n: int = field(default_factory=lambda: _get_int("RADAR_TOP_N", 8))
     recommendation_top_n: int = field(default_factory=lambda: _get_int("RADAR_RECOMMENDATION_TOP_N", 3))
     # Obsidian-aligned thresholds

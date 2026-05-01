@@ -36,11 +36,16 @@ def _latest_scan_dir(base_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _run_auto_scan(*, execute_paper: bool) -> int:
+def _run_auto_scan(*, execute_paper: bool, mode: str | None = None, symbols: str | None = None) -> int:
     env = os.environ.copy()
     env["RADAR_AUTO_EXECUTE_PAPER_TRADES"] = "true" if execute_paper else "false"
     script_path = Path(__file__).with_name("auto-run.py")
-    completed = subprocess.run([sys.executable, str(script_path)], env=env, check=False)
+    command = [sys.executable, str(script_path)]
+    if mode:
+        command += ["--mode", mode]
+    if symbols:
+        command += ["--symbols", symbols]
+    completed = subprocess.run(command, env=env, check=False)
     return int(completed.returncode)
 
 
@@ -51,12 +56,12 @@ def _save_review_artifact(base_dir: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
-def action_scan_only() -> int:
-    return _run_auto_scan(execute_paper=False)
+def action_scan_only(mode: str | None = None, symbols: str | None = None) -> int:
+    return _run_auto_scan(execute_paper=False, mode=mode, symbols=symbols)
 
 
-def action_scan_and_trade() -> int:
-    return _run_auto_scan(execute_paper=True)
+def action_scan_and_trade(mode: str | None = None, symbols: str | None = None) -> int:
+    return _run_auto_scan(execute_paper=True, mode=mode, symbols=symbols)
 
 
 def action_reconcile_and_update_metrics(base_dir: Path) -> int:
@@ -113,14 +118,16 @@ def main() -> int:
         help="Control-loop action to run.",
     )
     parser.add_argument("--dir", default=None, help="Base output directory containing history/ and scan_*.")
+    parser.add_argument("--mode", choices=["scan", "monitor"], default=None, help="Forward run mode to auto-run.py.")
+    parser.add_argument("--symbols", default=None, help="Comma-separated target symbols for monitor mode.")
     args = parser.parse_args()
 
     base_dir = Path(args.dir).expanduser().resolve() if args.dir else _base_output_dir()
 
     if args.action == "scan_only":
-        return action_scan_only()
+        return action_scan_only(mode=args.mode, symbols=args.symbols)
     if args.action == "scan_and_trade":
-        return action_scan_and_trade()
+        return action_scan_and_trade(mode=args.mode, symbols=args.symbols)
     if args.action == "reconcile_and_update_metrics":
         return action_reconcile_and_update_metrics(base_dir)
     if args.action == "strategy_review":

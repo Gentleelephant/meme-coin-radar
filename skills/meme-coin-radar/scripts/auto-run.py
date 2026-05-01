@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 妖币雷达 Phase 3.0 — OnchainOS + Alpha + Paper Trade 执行版
-用法: python3 scripts/auto-run.py
+用法:
+  python3 scripts/auto-run.py --mode scan
+  python3 scripts/auto-run.py --mode monitor --symbols PEPE,WIF
 数据输出: $XDG_STATE_HOME/meme-coin-radar/scan_YYYYMMDD_HHMMSS/
          或 ~/.local/state/meme-coin-radar/scan_YYYYMMDD_HHMMSS/
          若不可写则回退到系统临时目录
@@ -16,6 +18,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from datetime import datetime
@@ -23,7 +26,7 @@ from datetime import datetime
 from history_store import cleanup_old_snapshots, compute_relative_metrics, load_paper_positions, save_alpha_snapshot, save_social_snapshot, save_ticker_snapshot
 from config import ensure_output_dir, load_settings
 from asset_mapping import apply_to_candidates
-from candidate_discovery import discover_candidates, get_cex_symbols, prioritize_candidates
+from candidate_discovery import discover_candidates, get_cex_symbols
 from execution_binance import execute_paper_bracket
 from paper_analytics import compute_metrics
 from paper_reconciler import reconcile_all_positions, ticks_from_klines
@@ -46,13 +49,61 @@ from skill_dispatcher import (
 from versioning import load_project_version
 
 
+MODE_PROFILES = {
+    "scan": {
+        "label": "妖币扫描模式",
+        "trigger": "触发词包含“跑妖币雷达 / 扫描妖币 / meme radar”，且未指定目标代币。",
+        "cadence": "建议 15-60 分钟运行一次；高波动窗口可缩短到 5-15 分钟。",
+        "result_focus": "输出全市场候选池、推荐池、观察池和拒绝原因，适合发现潜在妖币。",
+    },
+    "monitor": {
+        "label": "指定代币监控模式",
+        "trigger": "用户显式给出监控代币列表，或外部调度器用 `--mode monitor --symbols ...` 调用。",
+        "cadence": "建议 1-5 分钟运行一次；做 T 时由外部循环持续调用。",
+        "result_focus": "输出目标代币的跟踪评分、执行计划和持仓相关上下文，适合已有标的的节奏跟踪。",
+    },
+}
+
+
+def _parse_symbol_csv(raw: str | None) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    seen: list[str] = []
+    for part in raw.split(","):
+        symbol = part.strip().upper()
+        if symbol and symbol not in seen:
+            seen.append(symbol)
+    return tuple(seen)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run meme-coin-radar in scan or target-monitor mode.")
+    parser.add_argument("--mode", choices=sorted(MODE_PROFILES), default=None, help="Run mode. Defaults to RADAR_RUN_MODE or scan.")
+    parser.add_argument("--symbols", default=None, help="Comma-separated target symbols for monitor mode.")
+    parser.add_argument("--top-n", type=int, default=None, help="Override RADAR_TOP_N for this run.")
+    parser.add_argument("--recommendation-top-n", type=int, default=None, help="Override RADAR_RECOMMENDATION_TOP_N for this run.")
+    return parser.parse_args()
+
+
+CLI_ARGS = _parse_args()
 SETTINGS = load_settings()
+if CLI_ARGS.top_n is not None:
+    SETTINGS.top_n = CLI_ARGS.top_n
+if CLI_ARGS.recommendation_top_n is not None:
+    SETTINGS.recommendation_top_n = CLI_ARGS.recommendation_top_n
 PROJECT_VERSION = load_project_version()
 DATA_DIR = ensure_output_dir(SETTINGS.output_dir)
 TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 SCAN_DIR = DATA_DIR / f"scan_{TS}"
 SCAN_DIR.mkdir(parents=True, exist_ok=True)
 MEDALS = ["🥇", "🥈", "🥉", "4.", "5.", "6.", "7.", "8."]
+RUN_MODE = (CLI_ARGS.mode or SETTINGS.run_mode or "scan").strip().lower()
+if RUN_MODE not in MODE_PROFILES:
+    raise SystemExit(f"Unsupported run mode: {RUN_MODE}")
+TARGET_SYMBOLS = _parse_symbol_csv(CLI_ARGS.symbols) or tuple(SETTINGS.target_symbols)
+if RUN_MODE == "monitor" and not TARGET_SYMBOLS:
+    raise SystemExit("monitor mode requires target symbols via --symbols or RADAR_TARGET_SYMBOLS")
+MODE_PROFILE = MODE_PROFILES[RUN_MODE]
 
 
 def save(name: str, content: str) -> str:
@@ -168,6 +219,9 @@ def _okx_attention_context(snapshot: dict) -> dict:
 
 print(f"=== 妖币雷达 v{PROJECT_VERSION} 扫描（OnchainOS + Alpha + Paper Trade）===")
 print(f"时间: {TS}")
+print(f"模式: {MODE_PROFILE['label']} ({RUN_MODE})")
+if TARGET_SYMBOLS:
+    print(f"目标: {', '.join(TARGET_SYMBOLS)}")
 
 # Step -1: OnchainOS auth preflight
 print("[-1] OnchainOS 登录态检查...")
@@ -271,13 +325,14 @@ print(
 print("[2] 候选发现层...")
 existing_positions = load_paper_positions(DATA_DIR)
 existing_position_symbols = list(existing_positions.keys())
+discovery_key_coins = list(dict.fromkeys(list(SETTINGS.key_coins) + list(TARGET_SYMBOLS)))
 candidates = discover_candidates(
     okx_hot_tokens=okx_hot_trending,
     okx_x_tokens=okx_hot_x,
     okx_signals=okx_signals,
     okx_tracker_activities=okx_tracker,
     alpha_dict=alpha_dict,
-    key_coins=list(SETTINGS.key_coins),
+    key_coins=discovery_key_coins,
     major_coins=list(SETTINGS.major_coins),
 )
 # P0-5: Asset mapping
@@ -306,6 +361,15 @@ multi_source_candidates = [c for c in enriched_candidates if len(c.get("candidat
 single_source_candidates = [c for c in enriched_candidates if len(c.get("candidate_sources", [])) < 2]
 enriched_candidates = multi_source_candidates + single_source_candidates
 
+if TARGET_SYMBOLS:
+    target_symbol_set = set(TARGET_SYMBOLS)
+    if RUN_MODE == "monitor":
+        enriched_candidates = [c for c in enriched_candidates if c.get("symbol") in target_symbol_set]
+    else:
+        target_first = [c for c in enriched_candidates if c.get("symbol") in target_symbol_set]
+        rest = [c for c in enriched_candidates if c.get("symbol") not in target_symbol_set]
+        enriched_candidates = target_first + rest
+
 # Separate tradable vs onchain
 tradable_candidates = [c for c in enriched_candidates if c.get("tradable_on_cex")]
 onchain_candidates = [c for c in enriched_candidates if not c.get("tradable_on_cex")]
@@ -314,6 +378,9 @@ mapped_cex_symbols = [c.get("symbol") for c in tradable_candidates if c.get("sym
 cex_symbols = list(dict.fromkeys(cex_symbols + mapped_cex_symbols + existing_position_symbols))
 if binance_symbol_whitelist:
     cex_symbols = [symbol for symbol in cex_symbols if symbol in binance_symbol_whitelist]
+if RUN_MODE == "monitor":
+    target_symbol_set = set(TARGET_SYMBOLS)
+    cex_symbols = [symbol for symbol in cex_symbols if symbol in target_symbol_set]
 
 print(f"  发现候选: CEX可交易={len(tradable_candidates)}, 链上观察={len(onchain_candidates)}")
 
@@ -652,10 +719,13 @@ top_ready = recommendations[:3]
 top_watch = [item for item in valid if not item.get("can_enter")][:3]
 summary_lines = [
     f"- 当前版本 `v{PROJECT_VERSION}`。",
+    f"- 运行模式 `{RUN_MODE}`（{MODE_PROFILE['label']}）。",
     f"- 扫描候选 {len(scored)} 个，进入观察池 {len(valid)} 个，可执行建议 {len(recommendations)} 个。",
     f"- 市场环境判断为 `{btc_dir}`，BTC 24h 涨跌 `{btc_chg:+.2f}%`，当前偏向 `{market_bias}`。",
     f"- {freshness_summary}。",
 ]
+if TARGET_SYMBOLS:
+    summary_lines.append("- 当前目标列表: " + "，".join(f"`{symbol}`" for symbol in TARGET_SYMBOLS) + "。")
 if top_ready:
     summary_lines.append(
         "- 当前优先关注: "
@@ -722,9 +792,11 @@ def _direction_label(item: dict) -> str:
 
 
 report_lines = [
-    f"# 🦊 妖币雷达 v{PROJECT_VERSION} 扫描报告",
+    f"# 🦊 妖币雷达 v{PROJECT_VERSION} {MODE_PROFILE['label']}报告",
     f"> 扫描时间：{TS}",
     f"> 版本：`v{PROJECT_VERSION}`",
+    f"> 运行模式：`{RUN_MODE}` / {MODE_PROFILE['label']}",
+    f"> 推荐频率：{MODE_PROFILE['cadence']}",
     "> **评分主轴**：`Onchain Opportunity Score (OOS)` + `Execution Readiness Score (ERS)`，以 `OKX OnchainOS` 为主，`Binance Alpha` 为补强，`Binance 模拟盘` 为执行承接。",
     "",
     "## Executive Summary",
@@ -935,6 +1007,16 @@ if all_rejected:
 
 report_lines += [
     "",
+    "## 🧭 Mode Contract",
+    "",
+    f"- 触发条件: {MODE_PROFILE['trigger']}",
+    f"- 推荐频率: {MODE_PROFILE['cadence']}",
+    f"- 输出重点: {MODE_PROFILE['result_focus']}",
+]
+if TARGET_SYMBOLS:
+    report_lines.append("- 目标代币: " + "，".join(f"`{symbol}`" for symbol in TARGET_SYMBOLS))
+report_lines += [
+    "",
     "## 🧩 Data Pipeline",
     "",
     "| Step | 数据内容 | 来源 |",
@@ -972,6 +1054,7 @@ for item in scored:
     plan = item.get("trade_plan")
     json_results.append({
         "radar_version": PROJECT_VERSION,
+        "run_mode": RUN_MODE,
         "symbol": item.get("symbol", item.get("name", "")),
         "decision": item["decision"],
         "final_score": item.get("final_score", item.get("total", 0)),
@@ -1010,6 +1093,21 @@ save(
             "radar_version": PROJECT_VERSION,
             "scan_timestamp": TS,
             "scan_dir": str(SCAN_DIR),
+            "run_mode": RUN_MODE,
+            "mode_profile": MODE_PROFILE,
+            "target_symbols": list(TARGET_SYMBOLS),
+            "output_contract": {
+                "report": "report.md",
+                "result": "result.json",
+                "meta": "00_scan_meta.json",
+                "fetch_status": "09_fetch_status.json",
+                "freshness": "10_data_freshness.json",
+                "onchain_snapshots": "11_onchain_snapshots.json",
+                "execution_results": "12_execution_results.json",
+                "paper_metrics": "14_paper_metrics.json",
+                "social_intel": "15_social_intel.json",
+                "strategy_feedback": "16_strategy_feedback.json",
+            },
             "onchainos_auth_preflight": {
                 "loggedIn": okx_logged_in,
                 "accountCount": okx_account_count,

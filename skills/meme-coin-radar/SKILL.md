@@ -1,20 +1,20 @@
 ---
 name: meme-coin-radar
-description: "妖币雷达 v3.3.0 — 基于 OKX OnchainOS + Binance Alpha + Binance 模拟盘承接的候选发现与评分 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'。"
+description: "妖币雷达 v3.4.0 — 支持全市场扫描与指定代币监控的候选发现、评分和模拟执行 skill。触发词：'跑妖币雷达'、'扫描妖币'、'meme radar'、'监控 PEPE/WIF'。"
 tags: ["crypto", "meme-coin", "okx", "onchainos", "binance", "alpha", "paper-trade", "smart-money", "sol", "bnb"]
 category: crypto-trading
 license: MIT
 author: hermes
-version: "3.3.0"
+version: "3.4.0"
 metadata:
-  phase: "3.2"
+  phase: "3.4"
   data_sources: ["okx-onchainos", "binance-cli", "binance-alpha"]
   scoring_model: "OOS + ERS + final decision"
   output: "analysis report + raw data to $XDG_STATE_HOME/meme-coin-radar/ or ~/.local/state/meme-coin-radar/ (fallback: system temp dir)"
   auto_script: "skills/meme-coin-radar/scripts/auto-run.py"
 ---
 
-# 妖币雷达 v3.2.0
+# 妖币雷达 v3.4.0
 
 > 单一版本源：`skills/meme-coin-radar/VERSION`
 
@@ -85,6 +85,55 @@ metadata:
 - 入场时机：15
 - 数据完整度与映射置信度：10
 
+## 运行模式
+
+### `scan`
+
+用途：
+
+- 全市场扫描，发现潜在妖币候选池
+- 适合研究、巡检、策略对比
+
+触发条件：
+
+- `跑妖币雷达`
+- `扫描妖币`
+- `meme radar`
+
+推荐频率：
+
+- 常规 `15-60` 分钟一次
+- 高波动窗口 `5-15` 分钟一次
+
+输出重点：
+
+- 全候选池评分
+- 推荐池 / 观察池 / 拒绝原因
+- 数据新鲜度与多源状态
+
+### `monitor`
+
+用途：
+
+- 仅针对指定代币持续监控与策略执行
+- 适合已有标的做 T、复核入场节奏、管理模拟单
+
+触发条件：
+
+- 用户明确给出代币列表，例如 `监控 PEPE,WIF`
+- 或通过命令行 / 环境变量指定目标标的
+
+推荐频率：
+
+- `1-5` 分钟一次
+- 持续监控由外部调度器循环调用
+
+输出重点：
+
+- 目标代币评分轨迹
+- 当前执行计划与保护策略
+- 持仓 / 执行相关上下文
+
 ## 运行入口
 
 触发词：
@@ -93,10 +142,21 @@ metadata:
 - `扫描妖币`
 - `meme radar`
 - `跑一遍雷达`
+- `监控 PEPE`
+- `监控 PEPE,WIF`
 
 脚本入口：
 
 ```bash
+python3 skills/meme-coin-radar/scripts/auto-run.py --mode scan
+python3 skills/meme-coin-radar/scripts/auto-run.py --mode monitor --symbols PEPE,WIF
+```
+
+环境变量入口：
+
+```bash
+export RADAR_RUN_MODE=monitor
+export RADAR_TARGET_SYMBOLS=PEPE,WIF
 python3 skills/meme-coin-radar/scripts/auto-run.py
 ```
 
@@ -119,6 +179,12 @@ python3 skills/meme-coin-radar/scripts/auto-run.py
 - `10_data_freshness.json`
 - `11_onchain_snapshots.json`
 - `12_execution_results.json`（启用自动模拟下单时）
+
+关键契约：
+
+- `00_scan_meta.json` 必须包含 `radar_version`、`run_mode`、`mode_profile`、`target_symbols`
+- `result.json` 每个候选必须包含 `run_mode`
+- `report.md` 顶部必须声明当前模式、推荐频率和输出重点
 
 ## 模拟交易执行
 
@@ -150,14 +216,14 @@ python3 skills/meme-coin-radar/scripts/auto-run.py
 
 ## 代码结构
 
-- `scripts/auto-run.py`：主编排入口
-- `scripts/skill_dispatcher.py`：数据抓取分发层
+- `scripts/auto-run.py`：pipeline 编排入口
+- `scripts/skill_dispatcher.py`：provider 调度层
 - `scripts/providers/onchainos.py`：OKX OnchainOS provider
 - `scripts/providers/binance.py`：Binance provider
-- `scripts/candidate_discovery.py`：候选发现
-- `scripts/asset_mapping.py`：链上标的到 Binance 执行标的映射
-- `scripts/scoring_modules.py`：分项评分函数
-- `scripts/radar_logic.py`：总评分与交易计划
+- `scripts/candidate_discovery.py`：candidate discovery 模块
+- `scripts/asset_mapping.py`：execution mapping 模块
+- `scripts/scoring_modules.py`：scoring modules
+- `scripts/radar_logic.py`：strategy / final decision 模块
 
 ## 注意事项
 

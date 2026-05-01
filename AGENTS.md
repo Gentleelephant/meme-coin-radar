@@ -21,12 +21,21 @@ Version-related places to review when bumping:
 - `skills/meme-coin-radar/VERSION`
 - `skills/meme-coin-radar/SKILL.md`
 - `skills/meme-coin-radar/scripts/auto-run.py`
+- `CHANGELOG.md`
 
 Expected behavior:
 
 - `VERSION` is the single source of truth for runtime version output.
 - `auto-run.py` should include the current version in terminal output, `report.md`, `result.json`, and `00_scan_meta.json`.
 - `SKILL.md` contains a static metadata version field and must be manually synchronized when the version changes.
+- `CHANGELOG.md` must record the user-visible change scope and whether results may change.
+- Before every push, create a Git tag for the current state. Prefer semantic version tags like `v3.4.0`; if the change is exploratory and not yet versioned, use a timestamp tag like `snapshot-20260501-153000`.
+
+Push / release expectation:
+
+- review whether the branch is changing strategy, scoring, providers, execution flow, or output structure
+- update `VERSION`, `SKILL.md`, and `CHANGELOG.md` together when the change is version-worthy
+- create the tag before `git push` so scan results can be traced back to an exact code state
 
 Suggested bump rules:
 
@@ -56,6 +65,7 @@ If scan outputs, reports, or JSON fields change, review:
 - `skills/meme-coin-radar/scripts/auto-run.py`
 - downstream report expectations in references/docs
 - any tests that validate output assumptions
+- `CHANGELOG.md` impact notes
 
 ### Tests
 
@@ -67,6 +77,18 @@ Minimum expectation:
 
 - add regression coverage for bug fixes
 - run the most relevant tests before closing the task
+
+### Changelog
+
+If the task changes behavior, scoring, providers, execution flow, mode semantics, or output files, update:
+
+- `CHANGELOG.md`
+
+Expected behavior:
+
+- every change entry must state what changed
+- every change entry must state impact scope: `strategy` / `data_source` / `execution_logic` / `docs` / `output_contract`
+- every change entry must state whether results are expected to change
 
 ### Review Documentation
 

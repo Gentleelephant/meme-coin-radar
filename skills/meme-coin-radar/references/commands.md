@@ -23,17 +23,24 @@
 
 ## 当前运行入口
 
-完整扫描：
+妖币扫描模式：
 
 ```bash
-python3 skills/meme-coin-radar/scripts/auto-run.py
+python3 skills/meme-coin-radar/scripts/auto-run.py --mode scan
+```
+
+指定代币监控模式：
+
+```bash
+python3 skills/meme-coin-radar/scripts/auto-run.py --mode monitor --symbols PEPE,WIF
 ```
 
 控制循环入口：
 
 ```bash
-python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_only
-python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_and_trade
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_only --mode scan
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_only --mode monitor --symbols PEPE,WIF
+python3 skills/meme-coin-radar/scripts/paper_control_loop.py scan_and_trade --mode monitor --symbols PEPE,WIF
 python3 skills/meme-coin-radar/scripts/paper_control_loop.py reconcile_and_update_metrics
 python3 skills/meme-coin-radar/scripts/paper_control_loop.py strategy_review
 ```
@@ -52,6 +59,7 @@ python3 skills/meme-coin-radar/scripts/paper_status.py
 
 | 文件 | 含义 |
 |---|---|
+| `00_scan_meta.json` | 运行模式、目标代币、版本、输出契约 |
 | `report.md` | 本次扫描 Markdown 报告 |
 | `result.json` | 候选评分结果 |
 | `04_binance_alpha.json` | Binance Alpha 原始快照 |
@@ -82,6 +90,8 @@ python3 skills/meme-coin-radar/scripts/paper_status.py
 ### 扫描与执行
 
 ```bash
+export RADAR_RUN_MODE=scan
+export RADAR_TARGET_SYMBOLS=PEPE,WIF
 export RADAR_EXECUTION_MODE=paper
 export RADAR_AUTO_EXECUTE_PAPER_TRADES=true
 export RADAR_VALIDATE_ORDERS_WITH_BINANCE=true

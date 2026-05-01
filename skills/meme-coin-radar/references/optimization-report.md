@@ -1,232 +1,185 @@
-# Optimization Report
+# 妖币雷达优化报告
 
-> Date: 2026-04-30
-> Topic: PANews / Surf integration reliability gaps
-> Purpose: organize concrete follow-up work for agent implementation
+更新时间: `2026-05-01`
+当前版本: `3.4.0`
 
----
+## 1. 本次落地结论
 
-## Summary
+### 运行流程
 
-The current social/news intel layer has three real integration risks:
+- 已拆分为两种显式运行模式:
+  - `scan`: 全市场妖币扫描
+  - `monitor`: 指定代币监控
+- 两种模式都已进入真实实现，不再只是文档约定。
+- `auto-run.py` / `paper_control_loop.py` 已支持 `--mode`、`--symbols`。
 
-1. `PANews` CLI path is hard-coded
-2. `surf` social command name is version-sensitive and currently hard-coded
-3. `surf` quota / free-tier exhaustion is not explicitly classified or circuit-broken
+### 版本管理
 
-These are reliability issues, not scoring-model issues.
+- 已补充流程约束:
+  - 版本变更时同步 `VERSION` / `SKILL.md` / `CHANGELOG.md`
+  - 每次 push 前必须先打 tag
+- tag 建议:
+  - 正式策略变更: `vX.Y.Z`
+  - 临时回放快照: `snapshot-YYYYMMDD-HHMMSS`
 
----
+### 输出契约
 
-## Confirmed Gaps
+- `report.md`、`result.json`、`00_scan_meta.json` 已加入运行模式元数据。
+- `00_scan_meta.json` 现在承载:
+  - `run_mode`
+  - `mode_profile`
+  - `target_symbols`
+  - `output_contract`
 
-### 1. PANews path is hard-coded
+## 2. 模式设计建议
 
-File:
-- [scripts/providers/intel.py](/Users/zhangpeng/opt/meme-coin-radar/skills/meme-coin-radar/scripts/providers/intel.py:22)
+### `scan`
 
-Current code:
-- `PANews_CLI = Path("/Users/zhangpeng/.cc-switch/skills/panews/scripts/cli.mjs")`
+目标:
 
-Problem:
-- works only on one specific user/machine layout
-- breaks portability across machines, accounts, CI, containers, or repo relocation
+- 找候选
+- 做策略横向比较
+- 建候选池
 
-Status:
-- confirmed in code
+建议调度:
 
-### 2. Surf social command is hard-coded as `search-social`
+- 常规市场: `15-60` 分钟
+- 波动窗口: `5-15` 分钟
 
-File:
-- [scripts/providers/intel.py](/Users/zhangpeng/opt/meme-coin-radar/skills/meme-coin-radar/scripts/providers/intel.py:247)
+适配场景:
 
-Current code:
-- `surf search-social --q ...`
+- 新妖币发现
+- 因子回顾
+- 日内选币
 
-Problem:
-- if `surf 1.0.6` renamed this surface to `search-social-posts`, current code will fail on newer installations
-- command compatibility is guessed, not discovered
+### `monitor`
 
-Status:
-- code-level risk confirmed
-- local shell in this session does not have `surf` installed, so the exact live surface could not be re-verified here
-- if agent already observed the rename on `surf 1.0.6`, treat it as a real compatibility issue
+目标:
 
-### 3. Surf quota exhaustion is not explicitly handled
+- 盯单一或少数标的
+- 做 T
+- 跟踪执行承接与风控节奏
 
-Files:
-- [scripts/providers/intel.py](/Users/zhangpeng/opt/meme-coin-radar/skills/meme-coin-radar/scripts/providers/intel.py:36)
-- [scripts/providers/intel.py](/Users/zhangpeng/opt/meme-coin-radar/skills/meme-coin-radar/scripts/providers/intel.py:292)
+建议调度:
 
-Problem:
-- provider failures are degraded generically
-- there is no explicit classification for:
-  - quota exhausted
-  - credits exhausted
-  - top-up required
-  - HTTP 402 / 429 style errors
-- there is also no circuit breaker, so the scan may keep retrying a provider that is known to be exhausted
+- `1-5` 分钟
+- 应由 `paper_control_loop.py` 或外部 cron / worker 持续驱动
 
-Status:
-- handling gap confirmed in code
-- whether your current Surf account is already exhausted was not verifiable in this shell because `surf` is unavailable here
+适配场景:
 
----
+- 已确定研究对象
+- 模拟持仓管理
+- 风险事件前后复核
 
-## Recommended Fixes
+## 3. Skills 命名规范评估
 
-### P0. Make PANews CLI resolution configurable
+### 顶层 skill 是否改名
 
-Recommended resolution order:
+结论:
 
-1. environment variable `RADAR_PANEWS_CLI`
-2. executable from `shutil.which("panews")`
-3. current local fallback path
+- 现阶段不建议重命名顶层 `meme-coin-radar`
 
-Suggested behavior:
+原因:
 
-- if `RADAR_PANEWS_CLI` points to a file, use `["node", path, ...]`
-- if `panews` binary exists, call it directly
-- only use the hard-coded path as last-resort compatibility fallback
+- 对外语义已经稳定，且触发词和历史输出都绑定该名字。
+- 当前更大的维护成本不在 skill 名，而在内部模块职责边界。
+- 直接重命名顶层 skill 会带来触发习惯、历史文档、自动化脚本兼容成本。
 
-Benefit:
-- removes user-home coupling
-- makes CI and multi-machine usage practical
+### 内部命名优化建议
 
-### P0. Add Surf command discovery / compatibility fallback
+建议保留 skill 名，但统一内部术语:
 
-Recommended approach:
+- `pipeline`: `auto-run.py`, `paper_control_loop.py`
+- `providers`: `providers/*.py`
+- `modules`: `candidate_discovery.py`, `asset_mapping.py`, `scoring_modules.py`
+- `strategy`: `radar_logic.py`, `paper_strategy_feedback.py`
 
-1. support env override:
-   - `RADAR_SURF_BIN`
-   - `RADAR_SURF_SOCIAL_CMD`
-2. if social command is `auto`, detect it once per process:
-   - try `surf list-operations`
-   - or try `surf <candidate> --help`
-3. choose in this order:
-   - `search-social-posts`
-   - `search-social`
+建议:
 
-Cache:
-- cache the detected command in-process so each scan does not rediscover it repeatedly
+- 后续目录和文档都优先使用 `strategy / pipeline / modules / providers` 这组词。
+- 先统一命名语义，再考虑是否在更大版本做结构重构。
 
-Benefit:
-- survives Surf CLI surface changes
-- avoids hard-coding one version’s command name
+## 4. 数据源与评分体系
 
-### P0. Explicitly classify Surf quota / rate-limit errors
+详细文档:
 
-Recommended detection patterns:
+- `references/data-sources-and-scoring.md`
 
-- `quota`
-- `credit`
-- `top up`
-- `402`
-- `429`
-- `rate limit`
-- `too many requests`
+本次结论:
 
-Recommended mapping:
+- 发现层核心仍是 `OKX OnchainOS`
+- 承接层核心仍是 `Binance Alpha + Futures`
+- 情绪层已经扩展到 `Surf + PANews`
+- 当前 Final Score 不是单纯百分制，而是策略排序分
 
-- `429` / throttling -> `FetchStatus.RATE_LIMIT`
-- quota / credit exhausted -> introduce `quota_exhausted` if desired, otherwise map to `RATE_LIMIT` with a precise message
+建议持续优化项:
 
-Benefit:
-- makes diagnostics actionable
-- avoids mixing “provider down” with “billing exhausted”
+- 将 `social_heat` 拆成 `social_signal` 与 `narrative_signal`
+- 将 `macro_catalyst` 独立列出，便于做 ablation test
+- 为 OOS / ERS 增加版本化 schema，支持跨版本回放对比
 
-### P1. Add Surf circuit breaker
+## 5. 数据源扩展与性能优化
 
-Recommended behavior:
+### 当前瓶颈
 
-- if Surf returns quota/rate-limit exhaustion once, disable further Surf calls for the rest of the scan
-- optionally persist a short TTL marker in cache, e.g. 1 to 6 hours
+- OKX OnchainOS、Binance、Surf、PANews 多数通过 CLI 取数
+- CLI 有额外进程启动、序列化、错误解析开销
+- `scan` 模式下 OKX 发现层与社交层的耗时最明显
 
-Suggested cache keys:
+### OnchainOS API 判断
 
-- `intel_cache_surf_disabled.json`
-- or `intel_cache_surf_health.json`
+基于官方公开资料与本仓库现状:
 
-Benefit:
-- avoids repeated failing calls
-- reduces latency and noisy logs
-- preserves PANews + OKX fallback quality
+- 当前仓库仍通过 CLI 调用 `onchainos`，见 `scripts/providers/onchainos.py`
+- 官方仓库表明技能集已经面向 “OKX OnchainOS API”:
+  - https://github.com/okx/onchainos-skills
+- 官方 SDK 显示至少部分 Onchain Gateway 能力可直接 API / SDK 化:
+  - https://github.com/okx/okx-dex-sdk
 
-### P1. Add provider feature flags
+判断:
 
-Recommended flags:
+- `OnchainOS -> API` 路线值得推进
+- 但不应一次性替换全部接口
 
-- `RADAR_ENABLE_SURF=true|false`
-- `RADAR_ENABLE_PANEWS=true|false`
-- `RADAR_SURF_BIN=surf`
-- `RADAR_SURF_SOCIAL_CMD=auto`
-- `RADAR_PANEWS_CLI=/path/to/cli.mjs`
+建议实施顺序:
 
-Benefit:
-- enables controlled rollout
-- makes it easy to disable Surf temporarily when quota is exhausted
+1. 抽象 `transport` 层，允许 `cli` / `api` 双实现
+2. 高频低风险接口先 API 化:
+   - `wallet status`
+   - `token price-info`
+   - `token advanced-info`
+3. 对复杂接口做灰度:
+   - `hot-tokens`
+   - `signal list`
+   - `tracker activities`
+   - `cluster-*`
+4. 保留 CLI fallback，直到 API 在字段完整性和稳定性上通过对比测试
 
-### P1. Improve degradation semantics in report/output
+### 性能优先级
 
-Current direction is already partly there with `source_degraded`.
+优先级从高到低:
 
-Recommended additions:
+1. `monitor` 模式 API 化
+2. 高频 token snapshot API 化
+3. 社交层缓存与 TTL 优化
+4. `scan` 模式全局发现层 API 化
 
-- show `surf unavailable` vs `surf quota exhausted` distinctly
-- preserve fallback scoring with `PANews + OKX`
-- add a short note into report/result metadata when Surf was disabled mid-scan
+## 6. 后续开发建议
 
-Suggested output fields:
+### P0
 
-- `surf_disabled_reason`
-- `surf_quota_exhausted`
-- `surf_command_selected`
+- 为 `monitor` 模式补单独的回归测试
+- 给 `00_scan_meta.json` 增加 schema 文档
+- 增加 tag 创建 checklist 到 CI 或 pre-push hook
 
----
+### P1
 
-## Suggested Agent Split
+- OnchainOS transport 抽象
+- API / CLI 双路径耗时对比
+- `result.json` 增加 score breakdown version
 
-### Task 1: PANews path resolution
+### P2
 
-Deliverables:
-
-- configurable path resolution
-- fallback order implementation
-- regression tests
-
-### Task 2: Surf command compatibility
-
-Deliverables:
-
-- command discovery for social search
-- support for both `search-social-posts` and legacy `search-social`
-- regression tests
-
-### Task 3: Surf quota handling
-
-Deliverables:
-
-- explicit quota/rate-limit error classification
-- circuit breaker / TTL disable behavior
-- report/fetch-status visibility
-
-### Task 4: Config and docs
-
-Deliverables:
-
-- new env vars documented
-- `SKILL.md` / references updated
-- operator guidance for disabling Surf when quota is exhausted
-
----
-
-## Minimum Viable Implementation
-
-If you want the smallest safe first pass, do this:
-
-1. parameterize `PANews` CLI path
-2. add Surf social command auto-detection
-3. classify Surf quota/rate-limit failures explicitly
-4. disable Surf for the rest of the scan after first quota exhaustion
-
-That gets most of the reliability benefit without changing the scoring model.
+- 将 `scan` 和 `monitor` 拆成独立 pipeline 文件
+- 支持多链监控
+- 补策略版本回放与结果 diff 工具
