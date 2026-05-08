@@ -214,3 +214,68 @@ class OnchainosProviderTest(unittest.TestCase):
         self.assertIsNotNone(result["cluster_top_holders"])
         self.assertIsNotNone(result["holders"])
         self.assertIsNotNone(result["trades"])
+
+    @patch("scripts.providers.onchainos.shutil.which", return_value="/usr/local/bin/onchainos")
+    @patch("scripts.providers.onchainos.run")
+    def test_retry_on_timeout_then_succeeds(self, mock_run, _mock_which) -> None:
+        """Timeout on first attempt, succeeds on retry (candidate 0)."""
+        mock_run.side_effect = [
+            CommandResult(returncode=None, stdout="", stderr="command timed out", timed_out=True),
+            CommandResult(returncode=None, stdout="", stderr="command timed out", timed_out=True),
+            CommandResult(returncode=0, stdout='{"data": [{"tokenSymbol": "RETRY_OK"}]}', stderr="", timed_out=False),
+        ]
+
+        items, status = hot_tokens(ranking_type=4, chain="solana", limit=1, time_frame=4)
+
+        self.assertTrue(status.ok)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["tokenSymbol"], "RETRY_OK")
+
+    @patch("scripts.providers.onchainos.shutil.which", return_value="/usr/local/bin/onchainos")
+    @patch("scripts.providers.onchainos.run")
+    def test_retry_on_network_error_then_succeeds(self, mock_run, _mock_which) -> None:
+        """Network error on first attempt, succeeds on retry."""
+        mock_run.side_effect = [
+            CommandResult(returncode=1, stdout="", stderr="connection refused", timed_out=False),
+            CommandResult(returncode=1, stdout="", stderr="connection refused", timed_out=False),
+            CommandResult(returncode=0, stdout='{"data": [{"tokenSymbol": "NET_OK"}]}', stderr="", timed_out=False),
+        ]
+
+        items, status = hot_tokens(ranking_type=4, chain="solana", limit=1, time_frame=4)
+
+        self.assertTrue(status.ok)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["tokenSymbol"], "NET_OK")
+
+    @patch("scripts.providers.onchainos.shutil.which", return_value="/usr/local/bin/onchainos")
+    @patch("scripts.providers.onchainos.run")
+    def test_max_total_runs_does_not_exceed_limit(self, mock_run, _mock_which) -> None:
+        """All commands fail: total runs (including re-login) should not exceed 5."""
+        mock_run.return_value = CommandResult(returncode=1, stdout="", stderr="unauthorized", timed_out=False)
+
+        items, status = hot_tokens(ranking_type=4, chain="solana", limit=1, time_frame=4)
+
+        self.assertFalse(status.ok)
+        self.assertEqual(status.error_type, FetchStatus.AUTH_ERROR)
+        # 2 command attempts + login refresh + 2 retry attempts = 5 max
+        self.assertLessEqual(mock_run.call_count, 5)
+
+    @patch("scripts.providers.onchainos.shutil.which", return_value="/usr/local/bin/onchainos")
+    @patch("scripts.providers.onchainos.run")
+    def test_non_retryable_error_does_not_retry(self, mock_run, _mock_which) -> None:
+        """PARSE_ERROR should not retry."""
+        mock_run.side_effect = [
+            CommandResult(returncode=0, stdout="not json", stderr="", timed_out=False),
+            CommandResult(returncode=0, stdout="also not json", stderr="", timed_out=False),
+        ]
+
+        items, status = hot_tokens(
+            ranking_type=4,
+            chain="solana",
+            limit=1,
+            time_frame=4,
+        )
+
+        self.assertFalse(status.ok)
+        self.assertEqual(status.error_type, FetchStatus.PARSE_ERROR)
+        self.assertEqual(mock_run.call_count, 2)
