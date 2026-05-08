@@ -23,7 +23,18 @@ import json
 import os
 from datetime import datetime
 
-from history_store import cleanup_old_snapshots, compute_relative_metrics, load_paper_positions, save_alpha_snapshot, save_social_snapshot, save_ticker_snapshot
+from history_store import (
+    analyze_score_trend,
+    cleanup_old_snapshots,
+    compute_relative_metrics,
+    load_paper_positions,
+    load_scan_history,
+    save_alpha_snapshot,
+    save_scan_history,
+    save_social_snapshot,
+    save_ticker_snapshot,
+    update_watchlist,
+)
 from config import ensure_output_dir, load_settings
 from asset_mapping import apply_to_candidates
 from candidate_discovery import discover_candidates, get_cex_symbols
@@ -46,6 +57,7 @@ from skill_dispatcher import (
     okx_tracker_activities,
     okx_wallet_status,
 )
+from size_guard import save_with_size_guard
 from versioning import load_project_version
 
 OUTPUT_CONTRACT_VERSION = "1.0"
@@ -219,14 +231,14 @@ def _print_binance_batch_diagnostics(fetch_status: dict[str, dict], results: dic
         payload = results.get(symbol) or {}
         available_count = sum(
             1
-            for field in ("ticker", "funding", "klines", "klines_4h", "klines_1d")
+            for field in ("ticker", "funding", "klines", "klines_4h", "klines_1d", "klines_15m", "klines_5m")
             if payload.get(field) is not None
         )
         if payload.get("oi") and isinstance(payload.get("oi"), dict) and payload["oi"].get("oi") is not None:
             available_count += 1
         if available_count == 0:
             empty_assets.append(symbol)
-        elif available_count < 6:
+        elif available_count < 8:
             partial_assets.append(symbol)
 
     if timed_out:
@@ -370,6 +382,7 @@ candidates = discover_candidates(
     alpha_dict=alpha_dict,
     key_coins=discovery_key_coins,
     major_coins=list(SETTINGS.major_coins),
+    top_alpha_n=SETTINGS.discovery_top_alpha_n,
 )
 # P0-5: Asset mapping
 cex_symbol_list = sorted(binance_symbol_whitelist) if binance_symbol_whitelist else [t["symbol"] for t in all_tickers]
@@ -705,6 +718,20 @@ for cand, provider_data, alpha, _base_result in tradable_base_results:
     result["candidate_sources"] = cand.get("candidate_sources", [])
     result["relative_metrics"] = rel_metrics
     plan = build_trade_plan(result, equity=account_equity, settings=SETTINGS)
+    # Attach multi-timeframe klines to result meta
+    provider_data = bnc_results.get(coin, {})
+    klines_multi = {}
+    for tf in ("klines_15m", "klines_5m"):
+        k = provider_data.get(tf)
+        if k is not None:
+            klines_multi[tf] = [
+                {"open": float(c[1]), "high": float(c[2]),
+                 "low": float(c[3]), "close": float(c[4]),
+                 "volume": float(c[5])}
+                for c in k[:50]
+            ]
+    result.setdefault("meta", {})["klines_multi"] = klines_multi
+
     result["trade_plan"] = plan
     if plan and plan.get("rr", 0) < 1.5:
         result["can_enter"] = False
@@ -742,6 +769,20 @@ top_candidates = valid[: SETTINGS.top_n]
 recommendations = [item for item in valid if item.get("can_enter")][: SETTINGS.recommendation_top_n]
 all_rejected = [item for item in scored if item["decision"] == "reject"]
 print(f"  候选总数={len(scored)}, 有效={len(valid)}, 拒绝={len(all_rejected)}, 可执行={len(recommendations)}")
+
+# Save scan history and update watchlist
+print("[3b] 保存扫描历史并更新观察清单...")
+save_scan_history(DATA_DIR, scored)
+scan_history = load_scan_history(DATA_DIR)
+watchlist = update_watchlist(DATA_DIR, valid, scan_history)
+watchlist_count = len(watchlist.get("coins", []))
+print(f"  扫描历史已追加，观察清单中有 {watchlist_count} 个币种")
+
+# Attach trend info to candidates
+for item in scored:
+    symbol = item.get("symbol", item.get("name", ""))
+    trend = analyze_score_trend(scan_history, symbol)
+    item["trend"] = trend
 for item in top_candidates[:3]:
     modules = item["module_scores"]
     print(
@@ -1120,6 +1161,7 @@ for item in scored:
             if k not in ("entry_low", "entry_high", "stop_loss", "take_profit_1", "take_profit_2")
         } if plan else None,
         "execution_result": item.get("execution_result"),
+        "trend": item.get("trend", {}),
     })
 
 # Validate output contract before saving
@@ -1131,7 +1173,7 @@ if not valid:
     if len(errors) > 5:
         print(f"    - ... 还有 {len(errors) - 5} 个问题")
 
-save("result.json", json.dumps(json_results, indent=2, ensure_ascii=False, default=str))
+save_with_size_guard("result.json", json_results, SCAN_DIR)
 save(
     "00_scan_meta.json",
     json.dumps(
