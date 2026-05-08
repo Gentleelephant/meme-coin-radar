@@ -46,6 +46,7 @@ from skill_dispatcher import (
     okx_tracker_activities,
     okx_wallet_status,
 )
+from size_guard import save_with_size_guard
 from versioning import load_project_version
 
 
@@ -1085,7 +1086,7 @@ for item in scored:
         "execution_result": item.get("execution_result"),
     })
 
-save("result.json", json.dumps(json_results, indent=2, ensure_ascii=False, default=str))
+save_with_size_guard("result.json", json_results, SCAN_DIR)
 save(
     "00_scan_meta.json",
     json.dumps(
