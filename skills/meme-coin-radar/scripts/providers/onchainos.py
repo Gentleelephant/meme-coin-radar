@@ -20,14 +20,44 @@ def _legacy_json_cmd(command: str) -> str:
     return f"{command} --format json"
 
 
+def _login_or_refresh(timeout: int = 10) -> FetchStatus:
+    """Attempt non-interactive re-login via onchainos CLI.
+
+    Uses environment variables (OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE)
+    when available; if not, the login will fail cleanly.
+    """
+    result = run("onchainos wallet login --force", timeout=timeout)
+    if result.returncode in (0,):
+        return FetchStatus(ok=True, source="onchainos_login")
+    return _status_from_command_result(
+        result, source="onchainos_login", latency_ms=0.0
+    )
+
+
 def _json_command(command: str, timeout: int, source: str) -> tuple[Any, FetchStatus]:
-    max_attempts = 2  # retry once specifically for auth errors
+    max_attempts = 2
+    max_total_runs = 5
+    run_count = 0
+
+    # Error types that may succeed on retry
+    _RETRYABLE = frozenset({
+        FetchStatus.AUTH_ERROR,
+        FetchStatus.TIMEOUT,
+        FetchStatus.NETWORK,
+        FetchStatus.RATE_LIMIT,
+    })
 
     for attempt in range(max_attempts):
         candidates = (_cmd(command), _legacy_json_cmd(command))
         last_status = FetchStatus(ok=False, error_type=FetchStatus.SOURCE_UNAVAILABLE, message="empty response", source=source)
+        # Track if any candidate hit a retryable error in this attempt
+        had_retryable = False
 
         for index, candidate in enumerate(candidates):
+            if run_count >= max_total_runs:
+                break
+            run_count += 1
+
             started_at = time.time()
             result = run(candidate, timeout=timeout)
             latency_ms = (time.time() - started_at) * 1000
@@ -37,11 +67,14 @@ def _json_command(command: str, timeout: int, source: str) -> tuple[Any, FetchSt
                 message = result.stderr or result.stdout or ("command timed out" if result.timed_out else "empty response")
                 if index == 1 and "unexpected argument '--format' found" in message:
                     continue
-                last_status = _status_from_command_result(
+                status = _status_from_command_result(
                     result,
                     source=source,
                     latency_ms=latency_ms,
                 )
+                last_status = status
+                if status.error_type in _RETRYABLE:
+                    had_retryable = True
                 continue
 
             try:
@@ -55,7 +88,9 @@ def _json_command(command: str, timeout: int, source: str) -> tuple[Any, FetchSt
                     source=source,
                 )
 
-        if last_status.error_type == FetchStatus.AUTH_ERROR and attempt == 0:
+        if attempt == 0 and had_retryable:
+            if last_status.error_type == FetchStatus.AUTH_ERROR:
+                _login_or_refresh(timeout=min(timeout, 15))
             time.sleep(2.0)
             continue
 
