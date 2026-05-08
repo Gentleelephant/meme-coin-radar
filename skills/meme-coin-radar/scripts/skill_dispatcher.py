@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 from typing import Any, Optional
@@ -70,8 +71,22 @@ except ImportError:
         swap_tickers as okx_swap_tickers_impl,
     )
 
-BATCH_WORKERS = 12
-BATCH_TIMEOUT_SECONDS = 60
+def _get_batch_workers() -> int:
+    raw = os.environ.get("RADAR_BATCH_WORKERS")
+    if raw:
+        return int(raw.strip())
+    return BATCH_WORKERS_DEFAULT
+
+
+def _get_batch_timeout() -> int:
+    raw = os.environ.get("RADAR_BATCH_TIMEOUT_SECONDS")
+    if raw:
+        return int(raw.strip())
+    return BATCH_TIMEOUT_DEFAULT
+
+
+BATCH_WORKERS_DEFAULT = 12
+BATCH_TIMEOUT_DEFAULT = 60
 
 
 def okx_btc_status() -> dict:
@@ -233,10 +248,13 @@ def batch_binance(coins: list) -> dict:
     results: dict[str, Any] = {}
     fetch_status: dict[str, Any] = {}
 
-    with ThreadPoolExecutor(max_workers=BATCH_WORKERS) as executor:
+    batch_workers = _get_batch_workers()
+    batch_timeout = _get_batch_timeout()
+
+    with ThreadPoolExecutor(max_workers=batch_workers) as executor:
         futures = {executor.submit(_fetch_one_coin, coin): coin for coin in coins}
         try:
-            for future in as_completed(futures, timeout=BATCH_TIMEOUT_SECONDS):
+            for future in as_completed(futures, timeout=batch_timeout):
                 symbol = futures[future]
                 try:
                     resolved_symbol, payload = future.result(timeout=25)

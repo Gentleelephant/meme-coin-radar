@@ -335,6 +335,7 @@ candidates = discover_candidates(
     alpha_dict=alpha_dict,
     key_coins=discovery_key_coins,
     major_coins=list(SETTINGS.major_coins),
+    top_alpha_n=SETTINGS.discovery_top_alpha_n,
 )
 # P0-5: Asset mapping
 cex_symbol_list = sorted(binance_symbol_whitelist) if binance_symbol_whitelist else [t["symbol"] for t in all_tickers]

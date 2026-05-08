@@ -111,6 +111,10 @@ class Settings:
             "BTC,ETH,SOL,ZEC,HYPE,BNB,DOGE,PEPE,WIF,SHIB,AAVE,AVAX,LINK,UNI,ARB,OP,INJ,SEI,TIA,SUI,APT,NEAR,FTM",
         )
     )
+    # Discovered configurable parameters
+    discovery_top_alpha_n: int = field(default_factory=lambda: _get_int("RADAR_DISCOVERY_TOP_ALPHA_N", 15))
+    batch_workers: int = field(default_factory=lambda: _get_int("RADAR_BATCH_WORKERS", 12))
+    batch_timeout_seconds: int = field(default_factory=lambda: _get_int("RADAR_BATCH_TIMEOUT_SECONDS", 60))
 
 
 def load_settings() -> Settings:

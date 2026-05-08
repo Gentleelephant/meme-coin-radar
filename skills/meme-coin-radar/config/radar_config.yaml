@@ -1,0 +1,56 @@
+# Radar scan configuration
+# Used by auto-run.py and consumed by trading-journal's auto_trade_radar.py
+version: "1.0"
+
+scan:
+  # Scan type
+  type: "majors_cex"  # majors_cex | meme_onchain
+
+  # Score thresholds
+  thresholds:
+    majors_cex:
+      final_min: 40
+      ers_min: 45
+    meme_onchain:
+      oos_min: 55
+      ers_min: 45
+
+  # Candidate count limits
+  max_candidates: 20
+  min_candidates: 1
+
+  # Discovery parameters
+  discovery_top_alpha_n: 15
+  discovery_limit: 20
+  discovery_timeframe: 4
+
+# Batch processing
+batch:
+  workers: 12
+  timeout_seconds: 60
+
+# Score weights
+weights:
+  turnover_activity_max: 25
+  momentum_window_max: 20
+  holder_structure_max: 20
+  smart_money_resonance_max: 15
+  social_heat_max: 5
+  market_cap_fit_max: 10
+  execution_mapping_max: 35
+  execution_alpha_max: 20
+  execution_liquidity_max: 20
+  execution_timing_max: 15
+  data_quality_max: 10
+  market_regime_max: 10
+
+# Output control
+output:
+  save_result_json: true
+  save_history: true
+  history_max_size: 10000
+
+# Data sources
+data_sources:
+  - binance
+  - onchain
