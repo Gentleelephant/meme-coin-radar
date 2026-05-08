@@ -60,6 +60,9 @@ from skill_dispatcher import (
 from size_guard import save_with_size_guard
 from versioning import load_project_version
 
+OUTPUT_CONTRACT_VERSION = "1.0"
+SUPPORTED_CONTRACT_VERSIONS = {"1.0"}
+
 
 MODE_PROFILES = {
     "scan": {
@@ -122,6 +125,39 @@ def save(name: str, content: str) -> str:
     path = SCAN_DIR / name
     path.write_text(content, encoding="utf-8")
     return str(path)
+
+
+REQUIRED_CANDIDATE_FIELDS = ["symbol", "final_score", "oos", "ers", "decision", "direction"]
+
+
+def validate_candidate(item: dict, path: str) -> list[str]:
+    """Validate a single candidate has all required fields."""
+    errors: list[str] = []
+    for field in REQUIRED_CANDIDATE_FIELDS:
+        if field not in item or item[field] is None:
+            errors.append(f"{path}: missing required field '{field}'")
+    return errors
+
+
+def validate_output(data: list[dict]) -> tuple[bool, list[str]]:
+    """Validate the output data has required field integrity."""
+    errors: list[str] = []
+    if not isinstance(data, list):
+        errors.append("root: expected list of candidates")
+        return False, errors
+
+    for i, item in enumerate(data):
+        item_errors = validate_candidate(item, f"candidates[{i}]")
+        errors.extend(item_errors)
+
+    return len(errors) == 0, errors
+
+
+def check_contract_compatibility(version: str | None) -> bool:
+    """Check if a contract version is compatible with the current output contract."""
+    if version is None or version == "0.9":
+        return False  # Pre-contract versions
+    return version in SUPPORTED_CONTRACT_VERSIONS
 
 
 def _data_freshness_report(fetch_status: dict, scan_ts: int) -> dict:
@@ -1094,6 +1130,7 @@ json_results = []
 for item in scored:
     plan = item.get("trade_plan")
     json_results.append({
+        "output_contract_version": OUTPUT_CONTRACT_VERSION,
         "radar_version": PROJECT_VERSION,
         "run_mode": RUN_MODE,
         "symbol": item.get("symbol", item.get("name", "")),
@@ -1127,11 +1164,21 @@ for item in scored:
         "trend": item.get("trend", {}),
     })
 
+# Validate output contract before saving
+valid, errors = validate_output(json_results)
+if not valid:
+    print(f" ⚠️ 输出格式校验发现 {len(errors)} 个问题：")
+    for e in errors[:5]:
+        print(f"    - {e}")
+    if len(errors) > 5:
+        print(f"    - ... 还有 {len(errors) - 5} 个问题")
+
 save_with_size_guard("result.json", json_results, SCAN_DIR)
 save(
     "00_scan_meta.json",
     json.dumps(
         {
+            "output_contract_version": OUTPUT_CONTRACT_VERSION,
             "radar_version": PROJECT_VERSION,
             "scan_timestamp": TS,
             "scan_dir": str(SCAN_DIR),
