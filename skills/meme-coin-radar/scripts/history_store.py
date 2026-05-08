@@ -221,6 +221,208 @@ def compute_relative_metrics(
     return metrics
 
 
+# ── Scan history & watchlist (Issue #5) ──────────────────────────────
+
+
+def scan_history_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "scan_history.jsonl"
+
+
+def save_scan_history(output_dir: Path, scored: list[dict]) -> Path:
+    """Append current scan results to scan_history.jsonl."""
+    path = scan_history_path(output_dir)
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    with path.open("a", encoding="utf-8") as handle:
+        for item in scored:
+            record = {
+                "timestamp": ts,
+                "symbol": item.get("symbol", item.get("name", "")),
+                "final_score": item.get("final_score", item.get("total", 0)),
+                "oos": item.get("oos", 0),
+                "ers": item.get("ers", 0),
+                "decision": item.get("decision", "unknown"),
+                "direction": item.get("direction"),
+            }
+            handle.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+    return path
+
+
+def load_scan_history(output_dir: Path, max_records: int = 5000) -> list[dict]:
+    """Load scan history records."""
+    path = scan_history_path(output_dir)
+    if not path.exists():
+        return []
+    results: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+            if isinstance(item, dict):
+                results.append(item)
+                if len(results) >= max_records:
+                    break
+        except json.JSONDecodeError:
+            continue
+    return results
+
+
+def analyze_score_trend(history: list[dict], symbol: str) -> dict:
+    """Analyze score trend for a symbol based on scan history."""
+    recent = [h for h in history if h.get("symbol", "").upper() == symbol.upper()][-20:]
+    if len(recent) < 3:
+        return {"trend": "insufficient_data"}
+
+    scores = [h.get("final_score", 0) or 0 for h in recent]
+    ers_list = [h.get("ers", 0) or 0 for h in recent]
+
+    score_trend = "stable"
+    if len(scores) >= 2:
+        first_avg = sum(scores[:len(scores)//2]) / max(len(scores)//2, 1)
+        last_avg = sum(scores[len(scores)//2:]) / max(len(scores) - len(scores)//2, 1)
+        if last_avg > first_avg * 1.2:
+            score_trend = "rising"
+        elif last_avg < first_avg * 0.8:
+            score_trend = "falling"
+
+    ers_trend = "stable"
+    if len(ers_list) >= 2:
+        first_avg = sum(ers_list[:len(ers_list)//2]) / max(len(ers_list)//2, 1)
+        last_avg = sum(ers_list[len(ers_list)//2:]) / max(len(ers_list) - len(ers_list)//2, 1)
+        if last_avg > first_avg * 1.1:
+            ers_trend = "rising"
+        elif last_avg < first_avg * 0.9:
+            ers_trend = "falling"
+
+    # Volatility
+    avg = sum(scores) / len(scores)
+    variance = sum((s - avg) ** 2 for s in scores) / len(scores)
+    volatility = variance ** 0.5
+
+    return {
+        "trend": score_trend,
+        "score_trend": score_trend,
+        "ers_trend": ers_trend,
+        "score_volatility": round(volatility, 2),
+        "sample_count": len(recent),
+    }
+
+
+# ── Watchlist management ─────────────────────────────────────────────
+
+
+def watchlist_path(output_dir: Path) -> Path:
+    return history_dir(output_dir) / "watchlist.json"
+
+
+def load_watchlist(output_dir: Path) -> dict:
+    """Load watchlist from disk."""
+    path = watchlist_path(output_dir)
+    if not path.exists():
+        return {"updated_at": "", "coins": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {"updated_at": "", "coins": []}
+    except json.JSONDecodeError:
+        return {"updated_at": "", "coins": []}
+
+
+def save_watchlist(output_dir: Path, watchlist: dict) -> Path:
+    """Save watchlist to disk."""
+    path = watchlist_path(output_dir)
+    path.write_text(json.dumps(watchlist, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    return path
+
+
+def compute_consecutive_top5(symbol: str, history: list[dict]) -> int:
+    """Count how many consecutive recent scans a symbol was in the top 5 by ERS."""
+    symbol = symbol.upper()
+    # Group history by timestamp and find ERS rankings
+    rounds: dict[str, list[dict]] = {}
+    for rec in history:
+        ts = rec.get("timestamp", "")
+        rounds.setdefault(ts, []).append(rec)
+
+    sorted_ts = sorted(rounds.keys(), reverse=True)
+    streak = 0
+    for ts in sorted_ts:
+        round_items = sorted(rounds[ts], key=lambda x: x.get("ers", 0) or 0, reverse=True)
+        top5_symbols = {r.get("symbol", "").upper() for r in round_items[:5]}
+        if symbol in top5_symbols:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def compute_consecutive_not_top10(symbol: str, history: list[dict]) -> int:
+    """Count how many consecutive recent scans a symbol was NOT in the top 10."""
+    symbol = symbol.upper()
+    rounds: dict[str, list[dict]] = {}
+    for rec in history:
+        ts = rec.get("timestamp", "")
+        rounds.setdefault(ts, []).append(rec)
+
+    sorted_ts = sorted(rounds.keys(), reverse=True)
+    streak = 0
+    for ts in sorted_ts:
+        round_items = sorted(rounds[ts], key=lambda x: x.get("ers", 0) or 0, reverse=True)
+        top10_symbols = {r.get("symbol", "").upper() for r in round_items[:10]}
+        if symbol not in top10_symbols:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def update_watchlist(output_dir: Path, all_candidates: list[dict], history: list[dict]) -> dict:
+    """Update watchlist automatically.
+
+    Add conditions:
+    - ERS >= 70 and consecutive top 5 by ERS >= 3
+
+    Remove conditions:
+    - Not in top 10 for 10 consecutive scans
+
+    Returns updated watchlist.
+    """
+    watchlist = load_watchlist(output_dir)
+    now_ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+    existing = {c.get("symbol", "").upper() for c in watchlist.get("coins", [])}
+
+    # Check add conditions
+    for cand in all_candidates:
+        symbol = cand.get("symbol", "").upper()
+        if not symbol:
+            continue
+        ers = cand.get("ers", 0) or 0
+        if ers >= 70:
+            top5_streak = compute_consecutive_top5(symbol, history)
+            if top5_streak >= 3 and symbol not in existing:
+                trend_data = analyze_score_trend(history, symbol)
+                watchlist.setdefault("coins", []).append({
+                    "symbol": symbol,
+                    "added_at": now_ts,
+                    "reason": "ers_top5_streak",
+                    "score_trend": trend_data.get("score_trend", "stable"),
+                })
+
+    # Check remove conditions
+    retained = []
+    for coin in watchlist.get("coins", []):
+        symbol = coin.get("symbol", "").upper()
+        not_top10 = compute_consecutive_not_top10(symbol, history)
+        if not_top10 >= 10:
+            continue  # Remove from watchlist
+        retained.append(coin)
+    watchlist["coins"] = retained
+
+    watchlist["updated_at"] = now_ts
+    save_watchlist(output_dir, watchlist)
+    return watchlist
+
+
 def cleanup_old_snapshots(output_dir: Path, keep_days: int = 30) -> int:
     """Remove snapshot files older than keep_days. Returns count of removed files."""
     hdir = history_dir(output_dir)
