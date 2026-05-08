@@ -195,14 +195,14 @@ def _print_binance_batch_diagnostics(fetch_status: dict[str, dict], results: dic
         payload = results.get(symbol) or {}
         available_count = sum(
             1
-            for field in ("ticker", "funding", "klines", "klines_4h", "klines_1d")
+            for field in ("ticker", "funding", "klines", "klines_4h", "klines_1d", "klines_15m", "klines_5m")
             if payload.get(field) is not None
         )
         if payload.get("oi") and isinstance(payload.get("oi"), dict) and payload["oi"].get("oi") is not None:
             available_count += 1
         if available_count == 0:
             empty_assets.append(symbol)
-        elif available_count < 6:
+        elif available_count < 8:
             partial_assets.append(symbol)
 
     if timed_out:
@@ -682,6 +682,20 @@ for cand, provider_data, alpha, _base_result in tradable_base_results:
     result["candidate_sources"] = cand.get("candidate_sources", [])
     result["relative_metrics"] = rel_metrics
     plan = build_trade_plan(result, equity=account_equity, settings=SETTINGS)
+    # Attach multi-timeframe klines to result meta
+    provider_data = bnc_results.get(coin, {})
+    klines_multi = {}
+    for tf in ("klines_15m", "klines_5m"):
+        k = provider_data.get(tf)
+        if k is not None:
+            klines_multi[tf] = [
+                {"open": float(c[1]), "high": float(c[2]),
+                 "low": float(c[3]), "close": float(c[4]),
+                 "volume": float(c[5])}
+                for c in k[:50]
+            ]
+    result.setdefault("meta", {})["klines_multi"] = klines_multi
+
     result["trade_plan"] = plan
     if plan and plan.get("rr", 0) < 1.5:
         result["can_enter"] = False
