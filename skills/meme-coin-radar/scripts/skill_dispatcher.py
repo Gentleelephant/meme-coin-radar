@@ -214,6 +214,12 @@ def _fetch_one_coin(symbol: str) -> tuple:
     klines_1d, klines_1d_status = binance_klines(symbol, interval="1d", limit=8)
     status_map["klines_1d"] = {**klines_1d_status.to_dict(), "fetched_at": now}
 
+    klines_15m, klines_15m_status = binance_klines(symbol, interval="15m", limit=50)
+    status_map["klines_15m"] = {**klines_15m_status.to_dict(), "fetched_at": now}
+
+    klines_5m, klines_5m_status = binance_klines(symbol, interval="5m", limit=50)
+    status_map["klines_5m"] = {**klines_5m_status.to_dict(), "fetched_at": now}
+
     oi, oi_status = binance_open_interest(symbol)
     status_map["oi"] = {**oi_status.to_dict(), "fetched_at": now}
 
@@ -223,10 +229,34 @@ def _fetch_one_coin(symbol: str) -> tuple:
         "klines": klines,
         "klines_4h": klines_4h,
         "klines_1d": klines_1d,
+        "klines_15m": klines_15m,
+        "klines_5m": klines_5m,
         "oi": oi,
         "_fetched_at": now,
         "_status": status_map,
     }
+
+
+def _format_klines(raw_klines: list | None) -> list[dict]:
+    """Convert Binance raw klines to dict format."""
+    if not raw_klines:
+        return []
+    return [
+        {"open": float(k[1]), "high": float(k[2]),
+         "low": float(k[3]), "close": float(k[4]),
+         "volume": float(k[5])}
+        for k in raw_klines
+    ]
+
+
+def _format_multi_tf_klines(provider_data: dict, limit: int = 50) -> dict[str, list[dict]]:
+    """Extract and format multi-timeframe klines from provider data."""
+    result: dict[str, list[dict]] = {}
+    for tf in ("klines_15m", "klines_5m"):
+        raw = provider_data.get(tf)
+        if raw:
+            result[tf] = _format_klines(raw)[:limit]
+    return result
 
 
 def batch_binance(coins: list) -> dict:
@@ -245,7 +275,7 @@ def batch_binance(coins: list) -> dict:
                 except Exception as exc:
                     results[symbol] = {
                         "ticker": None, "funding": None, "klines": None,
-                        "klines_4h": None, "klines_1d": None, "oi": None,
+                        "klines_4h": None, "klines_1d": None, "klines_15m": None, "klines_5m": None, "oi": None,
                         "_status": {"_batch_error": str(exc)},
                     }
                     fetch_status[symbol] = {"_batch_error": str(exc)}
@@ -258,7 +288,7 @@ def batch_binance(coins: list) -> dict:
             future.cancel()
             results[symbol] = {
                 "ticker": None, "funding": None, "klines": None,
-                "klines_4h": None, "klines_1d": None, "oi": None,
+                "klines_4h": None, "klines_1d": None, "klines_15m": None, "klines_5m": None, "oi": None,
                 "_status": {"_batch_error": "timeout"},
             }
             fetch_status[symbol] = {"_batch_error": "timeout"}
