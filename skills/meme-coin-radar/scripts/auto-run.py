@@ -23,7 +23,18 @@ import json
 import os
 from datetime import datetime
 
-from history_store import cleanup_old_snapshots, compute_relative_metrics, load_paper_positions, save_alpha_snapshot, save_social_snapshot, save_ticker_snapshot
+from history_store import (
+    analyze_score_trend,
+    cleanup_old_snapshots,
+    compute_relative_metrics,
+    load_paper_positions,
+    load_scan_history,
+    save_alpha_snapshot,
+    save_scan_history,
+    save_social_snapshot,
+    save_ticker_snapshot,
+    update_watchlist,
+)
 from config import ensure_output_dir, load_settings
 from asset_mapping import apply_to_candidates
 from candidate_discovery import discover_candidates, get_cex_symbols
@@ -708,6 +719,20 @@ top_candidates = valid[: SETTINGS.top_n]
 recommendations = [item for item in valid if item.get("can_enter")][: SETTINGS.recommendation_top_n]
 all_rejected = [item for item in scored if item["decision"] == "reject"]
 print(f"  候选总数={len(scored)}, 有效={len(valid)}, 拒绝={len(all_rejected)}, 可执行={len(recommendations)}")
+
+# Save scan history and update watchlist
+print("[3b] 保存扫描历史并更新观察清单...")
+save_scan_history(DATA_DIR, scored)
+scan_history = load_scan_history(DATA_DIR)
+watchlist = update_watchlist(DATA_DIR, valid, scan_history)
+watchlist_count = len(watchlist.get("coins", []))
+print(f"  扫描历史已追加，观察清单中有 {watchlist_count} 个币种")
+
+# Attach trend info to candidates
+for item in scored:
+    symbol = item.get("symbol", item.get("name", ""))
+    trend = analyze_score_trend(scan_history, symbol)
+    item["trend"] = trend
 for item in top_candidates[:3]:
     modules = item["module_scores"]
     print(
@@ -1085,6 +1110,7 @@ for item in scored:
             if k not in ("entry_low", "entry_high", "stop_loss", "take_profit_1", "take_profit_2")
         } if plan else None,
         "execution_result": item.get("execution_result"),
+        "trend": item.get("trend", {}),
     })
 
 save_with_size_guard("result.json", json_results, SCAN_DIR)
